@@ -140,7 +140,13 @@ const activeInputs = new Map();
 let nextInputColorIndex = 0;
 let audioContext = null;
 let resizeFrameId = null;
+let pointerMoveFrameId = null;
+let boardMetricsCache = null;
+let boardRectCache = null;
+let surfaceRectCache = null;
 const effectElements = [];
+const cellElements = new Map();
+const pendingPointerMoves = new Map();
 
 function randomValue() {
   return 1 + Math.floor(Math.random() * MAX_TILE_VALUE);
@@ -208,8 +214,7 @@ function clampNumber(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function getBoardMetrics() {
-  const rect = boardEl.getBoundingClientRect();
+function createBoardMetrics(rect) {
   const width = rect.width || window.innerWidth || 1;
   const height = rect.height || window.innerHeight || 1;
   const shortSide = Math.max(1, Math.min(width, height));
@@ -221,6 +226,33 @@ function getBoardMetrics() {
     longSide,
     areaFactor: Math.min(2.8, (width * height) / (shortSide * shortSide))
   };
+}
+
+function invalidateLayoutCache() {
+  boardMetricsCache = null;
+  boardRectCache = null;
+  surfaceRectCache = null;
+}
+
+function getBoardRect() {
+  if (!boardRectCache) {
+    boardRectCache = boardEl.getBoundingClientRect();
+  }
+  return boardRectCache;
+}
+
+function getSurfaceRect() {
+  if (!surfaceRectCache) {
+    surfaceRectCache = boardEl.parentElement.getBoundingClientRect();
+  }
+  return surfaceRectCache;
+}
+
+function getBoardMetrics(rect = getBoardRect()) {
+  if (rect === boardRectCache && boardMetricsCache) return boardMetricsCache;
+  const metrics = createBoardMetrics(rect);
+  if (rect === boardRectCache) boardMetricsCache = metrics;
+  return metrics;
 }
 
 function getBoardPixelSize() {
@@ -360,6 +392,7 @@ function updateModeControls() {
 function setMode(modeKey) {
   if (!GAME_MODES[modeKey] || modeKey === currentModeKey) return;
   currentModeKey = modeKey;
+  invalidateLayoutCache();
   updateModeControls();
   startNewBoard();
 }
@@ -375,6 +408,7 @@ function handleResize() {
   if (resizeFrameId !== null) return;
   resizeFrameId = window.requestAnimationFrame(() => {
     resizeFrameId = null;
+    invalidateLayoutCache();
     syncSizeTier();
   });
 }
@@ -470,7 +504,7 @@ function getSelectionOwners() {
 }
 
 function getNodeElement(id) {
-  return boardEl.querySelector(`[data-id="${id}"]`);
+  return cellElements.get(id) || null;
 }
 
 function applyCellState(button, node, selectedOwners, locked, extraClasses = []) {
@@ -494,8 +528,8 @@ function applyCellState(button, node, selectedOwners, locked, extraClasses = [])
 
 function getNodeCenter(id) {
   const node = getNodeById(id);
-  const surfaceRect = boardEl.parentElement.getBoundingClientRect();
-  const boardRect = boardEl.getBoundingClientRect();
+  const surfaceRect = getSurfaceRect();
+  const boardRect = getBoardRect();
   return {
     x: boardRect.left + (node.x / 100) * boardRect.width - surfaceRect.left,
     y: boardRect.top + (node.y / 100) * boardRect.height - surfaceRect.top
@@ -503,7 +537,7 @@ function getNodeCenter(id) {
 }
 
 function getPointerPoint(event) {
-  const surfaceRect = boardEl.parentElement.getBoundingClientRect();
+  const surfaceRect = getSurfaceRect();
   return {
     x: event.clientX - surfaceRect.left,
     y: event.clientY - surfaceRect.top
@@ -511,15 +545,14 @@ function getPointerPoint(event) {
 }
 
 function getBoardPercentPoint(event) {
-  const boardRect = boardEl.getBoundingClientRect();
+  const boardRect = getBoardRect();
   return {
     x: ((event.clientX - boardRect.left) / boardRect.width) * 100,
     y: ((event.clientY - boardRect.top) / boardRect.height) * 100
   };
 }
 
-function getBoardPercentPointFromClient(clientX, clientY) {
-  const boardRect = boardEl.getBoundingClientRect();
+function getBoardPercentPointFromClient(clientX, clientY, boardRect = getBoardRect()) {
   return {
     x: ((clientX - boardRect.left) / boardRect.width) * 100,
     y: ((clientY - boardRect.top) / boardRect.height) * 100
@@ -534,6 +567,7 @@ function renderBoard(extraClasses = new Map()) {
   const selectedOwners = getSelectionOwners();
   const locked = getLockedSelectedIds();
   boardEl.innerHTML = '';
+  cellElements.clear();
   nodes.forEach((node) => {
     const button = document.createElement('button');
     const classes = ['cell'];
@@ -553,6 +587,7 @@ function renderBoard(extraClasses = new Map()) {
     button.textContent = String(node.value);
     applyCellState(button, node, selectedOwners, locked, extraClasses.get(node.id) || []);
     boardEl.appendChild(button);
+    cellElements.set(node.id, button);
   });
 }
 
@@ -646,6 +681,7 @@ function removeInput(pointerId) {
     }
     input.pathEl.remove();
   }
+  pendingPointerMoves.delete(pointerId);
   if (boardEl.hasPointerCapture?.(pointerId)) {
     try {
       boardEl.releasePointerCapture(pointerId);
@@ -662,6 +698,11 @@ function removeInput(pointerId) {
 function clearAllInputs() {
   activeInputs.forEach((input) => input.pathEl.remove());
   activeInputs.clear();
+  pendingPointerMoves.clear();
+  if (pointerMoveFrameId !== null) {
+    window.cancelAnimationFrame(pointerMoveFrameId);
+    pointerMoveFrameId = null;
+  }
   focusedPointerId = null;
 }
 
@@ -855,21 +896,24 @@ function getIdsAtPointerPath(pointerId, clientX, clientY) {
   const input = activeInputs.get(pointerId);
   if (!input) return [];
 
-  const currentPoint = getBoardPercentPointFromClient(clientX, clientY);
+  const boardRect = getBoardRect();
+  const metrics = getBoardMetrics(boardRect);
+  const currentPoint = getBoardPercentPointFromClient(clientX, clientY, boardRect);
   const previousPoint = input.avoidPoints[input.avoidPoints.length - 1] || currentPoint;
   const moveHitRadius = getTuning().moveHitRadius;
-  const ids = getNodeIdsAlongSegment(previousPoint, currentPoint, moveHitRadius, pointerId);
-  const directId = getNearestNodeIdAtBoardPoint(currentPoint, moveHitRadius, pointerId);
+  const ids = getNodeIdsAlongSegment(previousPoint, currentPoint, moveHitRadius, pointerId, metrics);
+  const directId = getNearestNodeIdAtBoardPoint(currentPoint, moveHitRadius, pointerId, metrics);
   if (directId !== null && !ids.includes(directId)) ids.push(directId);
   return ids;
 }
 
 function getNearestNodeId(clientX, clientY, hitRadiusPercent, pointerId) {
-  const point = getBoardPercentPointFromClient(clientX, clientY);
-  return getNearestNodeIdAtBoardPoint(point, hitRadiusPercent, pointerId);
+  const boardRect = getBoardRect();
+  const point = getBoardPercentPointFromClient(clientX, clientY, boardRect);
+  return getNearestNodeIdAtBoardPoint(point, hitRadiusPercent, pointerId, getBoardMetrics(boardRect));
 }
 
-function getNearestNodeIdAtBoardPoint(point, hitRadiusPercent, pointerId) {
+function getNearestNodeIdAtBoardPoint(point, hitRadiusPercent, pointerId, metrics = getBoardMetrics()) {
   if (!isInsideBoardPoint(point)) return null;
 
   let nearestId = null;
@@ -877,7 +921,7 @@ function getNearestNodeIdAtBoardPoint(point, hitRadiusPercent, pointerId) {
   nodes.forEach((node) => {
     if (resolvingIds.has(node.id)) return;
     if (isLockedByAnotherInput(pointerId, node.id)) return;
-    const nodeDistance = getBoardDistance(point, node);
+    const nodeDistance = getBoardDistance(point, node, metrics);
     if (nodeDistance <= nearestDistance) {
       nearestDistance = nodeDistance;
       nearestId = node.id;
@@ -886,8 +930,7 @@ function getNearestNodeIdAtBoardPoint(point, hitRadiusPercent, pointerId) {
   return nearestId;
 }
 
-function getSegmentHit(point, start, end) {
-  const metrics = getBoardMetrics();
+function getSegmentHit(point, start, end, metrics = getBoardMetrics()) {
   const normalizedPoint = {
     x: (point.x / 100) * metrics.width,
     y: (point.y / 100) * metrics.height
@@ -922,7 +965,7 @@ function getSegmentHit(point, start, end) {
   };
 }
 
-function getNodeIdsAlongSegment(start, end, hitRadiusPercent, pointerId) {
+function getNodeIdsAlongSegment(start, end, hitRadiusPercent, pointerId, metrics = getBoardMetrics()) {
   const input = activeInputs.get(pointerId);
   const previousId = input ? input.selectedIds[input.selectedIds.length - 2] : null;
   const hits = [];
@@ -932,7 +975,7 @@ function getNodeIdsAlongSegment(start, end, hitRadiusPercent, pointerId) {
     if (isLockedByAnotherInput(pointerId, node.id)) return;
     if (input?.selectedIds.includes(node.id) && node.id !== previousId) return;
 
-    const hit = getSegmentHit(node, start, end);
+    const hit = getSegmentHit(node, start, end, metrics);
     if (hit.distance <= hitRadiusPercent) {
       hits.push({
         id: node.id,
@@ -997,6 +1040,38 @@ function addIdsAtPointerPath(pointerId, event) {
     changed = addIdToSelection(pointerId, id, false) || changed;
   });
   if (changed) commitSelectionChange(input);
+}
+
+function processPointerMove(point) {
+  if (!activeInputs.has(point.pointerId)) return;
+  addIdsAtPointerPath(point.pointerId, point);
+  showActivePath(point.pointerId, point);
+}
+
+function flushPendingPointerMove(pointerId) {
+  const point = pendingPointerMoves.get(pointerId);
+  if (!point) return;
+  pendingPointerMoves.delete(pointerId);
+  processPointerMove(point);
+}
+
+function flushPendingPointerMoves() {
+  pointerMoveFrameId = null;
+  const moves = [...pendingPointerMoves.values()];
+  pendingPointerMoves.clear();
+  moves.forEach(processPointerMove);
+}
+
+function queuePointerMove(event) {
+  pendingPointerMoves.set(event.pointerId, {
+    pointerId: event.pointerId,
+    clientX: event.clientX,
+    clientY: event.clientY
+  });
+
+  if (pointerMoveFrameId === null) {
+    pointerMoveFrameId = window.requestAnimationFrame(flushPendingPointerMoves);
+  }
 }
 
 function getSpawnAvoidPoints(pointerId, finishedInput) {
@@ -1136,6 +1211,7 @@ function finishSelection(pointerId, event = null) {
 
   input.isFinishing = true;
   if (event) {
+    flushPendingPointerMove(pointerId);
     addIdsAtPointerPath(pointerId, event);
     showActivePath(pointerId, event);
   }
@@ -1227,9 +1303,7 @@ function capturePointer(pointerId) {
 function handlePointerMove(event) {
   if (!activeInputs.has(event.pointerId)) return;
   preventBoardGesture(event);
-
-  addIdsAtPointerPath(event.pointerId, event);
-  showActivePath(event.pointerId, event);
+  queuePointerMove(event);
 }
 
 boardEl.addEventListener('pointerdown', (event) => {
