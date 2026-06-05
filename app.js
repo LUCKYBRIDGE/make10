@@ -1,7 +1,7 @@
 const TARGET_SUM = 10;
 const MAX_TILE_VALUE = 9;
-const MIN_NODE_COUNT = 18;
-const MAX_NODE_COUNT = 38;
+const MIN_NODE_COUNT = 14;
+const MAX_NODE_COUNT = 44;
 const DENSITY_STEPS = Object.freeze([
   { boardSize: 980, nodeCount: 38, minDistance: 12.8 },
   { boardSize: 860, nodeCount: 34, minDistance: 13.4 },
@@ -12,15 +12,95 @@ const DENSITY_STEPS = Object.freeze([
 ]);
 const BOARD_MARGIN_PERCENT = 9;
 const BOARD_SPAN_PERCENT = 82;
-const MIN_NODE_GAP_PX = 18;
-const START_HIT_RADIUS_PERCENT = 3.8;
-const MOVE_HIT_RADIUS_PERCENT = 3.1;
-const TRAIL_POINT_MIN_DISTANCE = 7;
+const GAME_MODES = Object.freeze({
+  mobile: {
+    label: '모바일',
+    nodeDelta: -4,
+    minNodes: 14,
+    maxNodes: 22,
+    minNodeGapPx: 22,
+    startHitRadius: 4.6,
+    moveHitRadius: 3.8,
+    trailPointMinDistance: 8,
+    maxEffectElements: 42
+  },
+  tablet: {
+    label: '태블릿',
+    nodeDelta: 0,
+    minNodes: 18,
+    maxNodes: 38,
+    minNodeGapPx: 18,
+    startHitRadius: 3.8,
+    moveHitRadius: 3.1,
+    trailPointMinDistance: 7,
+    maxEffectElements: 70
+  },
+  board: {
+    label: '웹/전자칠판',
+    nodeDelta: 6,
+    minNodes: 28,
+    maxNodes: MAX_NODE_COUNT,
+    minNodeGapPx: 20,
+    startHitRadius: 3.4,
+    moveHitRadius: 2.8,
+    trailPointMinDistance: 9,
+    maxEffectElements: 70
+  }
+});
+const SIZE_TIERS = Object.freeze([
+  {
+    key: 'compact',
+    label: '작은 화면',
+    maxShortSide: 560,
+    nodeDelta: -3,
+    minNodeDelta: -2,
+    maxNodeDelta: -4,
+    gapDeltaPx: 4,
+    hitRadiusDelta: 0.35,
+    trailPointDelta: 1,
+    effectDelta: -18
+  },
+  {
+    key: 'standard',
+    label: '표준 화면',
+    maxShortSide: 820,
+    nodeDelta: 0,
+    minNodeDelta: 0,
+    maxNodeDelta: 0,
+    gapDeltaPx: 0,
+    hitRadiusDelta: 0,
+    trailPointDelta: 0,
+    effectDelta: 0
+  },
+  {
+    key: 'wide',
+    label: '넓은 화면',
+    maxShortSide: 1100,
+    nodeDelta: 2,
+    minNodeDelta: 1,
+    maxNodeDelta: 2,
+    gapDeltaPx: 1,
+    hitRadiusDelta: -0.1,
+    trailPointDelta: 1,
+    effectDelta: 0
+  },
+  {
+    key: 'large',
+    label: '대형 화면',
+    maxShortSide: Infinity,
+    nodeDelta: 5,
+    minNodeDelta: 2,
+    maxNodeDelta: 6,
+    gapDeltaPx: 2,
+    hitRadiusDelta: -0.25,
+    trailPointDelta: 2,
+    effectDelta: 0
+  }
+]);
 const BASE_SCORE = 100;
 const EXTRA_NODE_SCORE = 45;
 const COMBO_SCORE = 25;
 const MAX_COMBO_BONUS = 100;
-const MAX_EFFECT_ELEMENTS = 70;
 const SPAWN_POSITION_ATTEMPTS = 640;
 const READY_COLOR = '#d88416';
 const OVER_TARGET_COLOR = '#cf4d5e';
@@ -42,15 +122,19 @@ const comboEl = document.getElementById('comboValue');
 const feedbackEl = document.getElementById('feedback');
 const progressFillEl = document.getElementById('progressFill');
 const newBoardButton = document.getElementById('newBoardButton');
+const modeButtons = [...document.querySelectorAll('[data-mode-button]')];
 
 let nodes = [];
 let score = 0;
 let combo = 0;
+let currentModeKey = getInitialModeKey();
+let currentSizeTierKey = getSizeTierKey();
 let focusedPointerId = null;
 let resolvingIds = new Set();
 const activeInputs = new Map();
 let nextInputColorIndex = 0;
 let audioContext = null;
+let resizeFrameId = null;
 const effectElements = [];
 
 function randomValue() {
@@ -75,6 +159,50 @@ function distance(first, second) {
   return Math.hypot(first.x - second.x, first.y - second.y);
 }
 
+function getInitialModeKey() {
+  if (window.innerWidth <= 700) return 'mobile';
+  if (window.innerWidth >= 1180) return 'board';
+  return 'tablet';
+}
+
+function getShortViewportSide() {
+  return Math.min(window.innerWidth, window.innerHeight);
+}
+
+function getSizeTierKey() {
+  const shortSide = getShortViewportSide();
+  return SIZE_TIERS.find((tier) => shortSide <= tier.maxShortSide)?.key || 'large';
+}
+
+function getMode() {
+  return GAME_MODES[currentModeKey];
+}
+
+function getSizeTier() {
+  return SIZE_TIERS.find((tier) => tier.key === currentSizeTierKey) || SIZE_TIERS[1];
+}
+
+function getTuning() {
+  const mode = getMode();
+  const tier = getSizeTier();
+  return {
+    modeLabel: mode.label,
+    sizeLabel: tier.label,
+    nodeDelta: mode.nodeDelta + tier.nodeDelta,
+    minNodes: clampNumber(mode.minNodes + tier.minNodeDelta, MIN_NODE_COUNT, MAX_NODE_COUNT),
+    maxNodes: clampNumber(mode.maxNodes + tier.maxNodeDelta, MIN_NODE_COUNT, MAX_NODE_COUNT),
+    minNodeGapPx: Math.max(14, mode.minNodeGapPx + tier.gapDeltaPx),
+    startHitRadius: Math.max(2.4, mode.startHitRadius + tier.hitRadiusDelta),
+    moveHitRadius: Math.max(2.1, mode.moveHitRadius + tier.hitRadiusDelta),
+    trailPointMinDistance: Math.max(6, mode.trailPointMinDistance + tier.trailPointDelta),
+    maxEffectElements: clampNumber(mode.maxEffectElements + tier.effectDelta, 32, 80)
+  };
+}
+
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function getBoardPixelSize() {
   const rect = boardEl.getBoundingClientRect();
   return Math.min(rect.width || window.innerWidth, rect.height || window.innerHeight);
@@ -85,7 +213,9 @@ function getDensityForBoardSize(boardSize) {
 }
 
 function getResponsiveNodeCount() {
-  return Math.min(MAX_NODE_COUNT, getDensityForBoardSize(getBoardPixelSize()).nodeCount);
+  const tuning = getTuning();
+  const baseCount = getDensityForBoardSize(getBoardPixelSize()).nodeCount + tuning.nodeDelta;
+  return clampNumber(baseCount, tuning.minNodes, tuning.maxNodes);
 }
 
 function getCellDiameterPixels() {
@@ -96,14 +226,17 @@ function getCellDiameterPixels() {
   }
 
   const viewportMin = Math.min(window.innerWidth, window.innerHeight);
+  if (currentModeKey === 'mobile') return Math.min(64, Math.max(48, viewportMin * 0.12));
+  if (currentModeKey === 'board') return Math.min(62, Math.max(42, viewportMin * 0.052));
   return Math.min(60, Math.max(40, viewportMin * 0.07));
 }
 
 function getMinimumNodeDistance(count) {
   const matchedStep = DENSITY_STEPS.find((step) => count >= step.nodeCount);
+  const tuning = getTuning();
   const densityDistance = matchedStep?.minDistance || DENSITY_STEPS[DENSITY_STEPS.length - 1].minDistance;
   const boardSize = getBoardPixelSize();
-  const visualDistance = ((getCellDiameterPixels() + MIN_NODE_GAP_PX) / Math.max(1, boardSize)) * 100;
+  const visualDistance = ((getCellDiameterPixels() + tuning.minNodeGapPx) / Math.max(1, boardSize)) * 100;
   return Math.max(densityDistance, visualDistance);
 }
 
@@ -174,6 +307,38 @@ function updateStats() {
   scoreEl.textContent = String(score);
   comboEl.textContent = String(combo);
   progressFillEl.style.width = `${score % 1000 / 10}%`;
+}
+
+function updateModeControls() {
+  document.body.dataset.mode = currentModeKey;
+  document.body.dataset.size = currentSizeTierKey;
+  modeButtons.forEach((button) => {
+    const isActive = button.dataset.modeButton === currentModeKey;
+    button.classList.toggle('active', isActive);
+    button.setAttribute('aria-pressed', String(isActive));
+  });
+}
+
+function setMode(modeKey) {
+  if (!GAME_MODES[modeKey] || modeKey === currentModeKey) return;
+  currentModeKey = modeKey;
+  updateModeControls();
+  startNewBoard();
+}
+
+function syncSizeTier() {
+  const nextSizeTierKey = getSizeTierKey();
+  if (nextSizeTierKey === currentSizeTierKey) return;
+  currentSizeTierKey = nextSizeTierKey;
+  updateModeControls();
+}
+
+function handleResize() {
+  if (resizeFrameId !== null) return;
+  resizeFrameId = window.requestAnimationFrame(() => {
+    resizeFrameId = null;
+    syncSizeTier();
+  });
 }
 
 function ensureAudioContext() {
@@ -368,7 +533,7 @@ function pointsToSmoothPath(points) {
 
 function addTrailPoint(input, point) {
   const last = input.trailPoints[input.trailPoints.length - 1];
-  if (last && Math.hypot(last.x - point.x, last.y - point.y) < TRAIL_POINT_MIN_DISTANCE) return;
+  if (last && Math.hypot(last.x - point.x, last.y - point.y) < getTuning().trailPointMinDistance) return;
   input.trailPoints.push(point);
 }
 
@@ -482,7 +647,7 @@ function addEffectElement(className, point, ms, text = '') {
 function appendEffectElement(element, ms) {
   effectsLayerEl.appendChild(element);
   effectElements.push(element);
-  while (effectElements.length > MAX_EFFECT_ELEMENTS) {
+  while (effectElements.length > getTuning().maxEffectElements) {
     effectElements.shift()?.remove();
   }
   window.setTimeout(() => {
@@ -608,7 +773,7 @@ function pulseComboBreak() {
 }
 
 function getTargetId(event) {
-  return getNearestNodeId(event.clientX, event.clientY, START_HIT_RADIUS_PERCENT, event.pointerId);
+  return getNearestNodeId(event.clientX, event.clientY, getTuning().startHitRadius, event.pointerId);
 }
 
 function getIdsAtPointerPath(pointerId, clientX, clientY) {
@@ -617,8 +782,9 @@ function getIdsAtPointerPath(pointerId, clientX, clientY) {
 
   const currentPoint = getBoardPercentPointFromClient(clientX, clientY);
   const previousPoint = input.avoidPoints[input.avoidPoints.length - 1] || currentPoint;
-  const ids = getNodeIdsAlongSegment(previousPoint, currentPoint, MOVE_HIT_RADIUS_PERCENT, pointerId);
-  const directId = getNearestNodeIdAtBoardPoint(currentPoint, MOVE_HIT_RADIUS_PERCENT, pointerId);
+  const moveHitRadius = getTuning().moveHitRadius;
+  const ids = getNodeIdsAlongSegment(previousPoint, currentPoint, moveHitRadius, pointerId);
+  const directId = getNearestNodeIdAtBoardPoint(currentPoint, moveHitRadius, pointerId);
   if (directId !== null && !ids.includes(directId)) ids.push(directId);
   return ids;
 }
@@ -949,9 +1115,10 @@ function resetBoard(nextNodes, message) {
 
 function startNewBoard() {
   const nodeCount = getResponsiveNodeCount();
+  const tuning = getTuning();
   resetBoard(
     createNodes(Array.from({ length: nodeCount }, randomValue)),
-    `랜덤 배치입니다. ${nodeCount}개의 숫자를 이어 합 10을 만드세요.`
+    `${tuning.modeLabel} · ${tuning.sizeLabel} · ${nodeCount}개의 숫자를 이어 10을 만드세요.`
   );
 }
 
@@ -989,5 +1156,10 @@ boardEl.addEventListener('lostpointercapture', (event) => {
 });
 
 newBoardButton.addEventListener('click', startNewBoard);
+modeButtons.forEach((button) => {
+  button.addEventListener('click', () => setMode(button.dataset.modeButton));
+});
+window.addEventListener('resize', handleResize);
 
+updateModeControls();
 startNewBoard();

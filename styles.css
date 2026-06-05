@@ -11,7 +11,48 @@
   --rose: #cf4d5e;
   --blue: #3774a5;
   --shadow: 0 14px 36px rgba(30, 38, 33, 0.12);
+  --board-size: min(86vh, 980px, 100%);
+  --cell-size: clamp(40px, 7vmin, 60px);
+  --cell-font-size: clamp(1.08rem, 4.4vmin, 2.05rem);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body[data-mode="mobile"] {
+  --board-size: min(78vh, 620px, 100%);
+  --cell-size: clamp(48px, 12vmin, 64px);
+  --cell-font-size: clamp(1.35rem, 7vmin, 2.2rem);
+}
+
+body[data-mode="board"] {
+  --board-size: min(88vh, 1100px, 100%);
+  --cell-size: clamp(42px, 5.2vmin, 62px);
+  --cell-font-size: clamp(1.18rem, 3.2vmin, 2rem);
+}
+
+body[data-size="compact"] {
+  --board-size: min(76vh, 600px, 100%);
+}
+
+body[data-size="wide"] {
+  --board-size: min(87vh, 1040px, 100%);
+}
+
+body[data-size="large"] {
+  --board-size: min(89vh, 1160px, 100%);
+}
+
+body[data-mode="mobile"][data-size="compact"] {
+  --board-size: min(72vh, 540px, 100%);
+  --cell-size: clamp(50px, 13vmin, 66px);
+}
+
+body[data-mode="tablet"][data-size="compact"] {
+  --cell-size: clamp(44px, 9vmin, 60px);
+}
+
+body[data-mode="tablet"][data-size="large"],
+body[data-mode="board"][data-size="large"] {
+  --cell-size: clamp(42px, 4.8vmin, 64px);
 }
 
 * {
@@ -59,9 +100,18 @@ button:focus-visible,
   gap: 18px;
 }
 
+body[data-size="compact"] .app-shell {
+  padding: 14px 0;
+  gap: 12px;
+}
+
+body[data-size="large"] .app-shell {
+  width: min(1440px, calc(100vw - 32px));
+}
+
 .topbar {
   display: grid;
-  grid-template-columns: minmax(190px, 1fr) auto auto;
+  grid-template-columns: minmax(190px, 1fr) auto auto auto;
   align-items: center;
   gap: 16px;
 }
@@ -123,6 +173,33 @@ h1 {
   font-weight: 800;
 }
 
+.mode-switch {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, auto));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.mode-button {
+  min-height: 42px;
+  padding: 0 12px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.mode-button.active {
+  background: var(--green);
+  color: #fff;
+  box-shadow: 0 6px 14px rgba(22, 128, 92, 0.16);
+}
+
 .ghost-button {
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.86);
@@ -181,7 +258,7 @@ h1 {
 .board {
   position: relative;
   z-index: 3;
-  width: min(86vh, 980px, 100%);
+  width: var(--board-size);
   aspect-ratio: 1 / 1;
   margin: auto;
   padding: 0;
@@ -191,8 +268,8 @@ h1 {
 
 .cell {
   position: absolute;
-  width: clamp(40px, 7vmin, 60px);
-  height: clamp(40px, 7vmin, 60px);
+  width: var(--cell-size);
+  height: var(--cell-size);
   display: grid;
   place-items: center;
   border: 1px solid rgba(28, 36, 32, 0.15);
@@ -202,7 +279,7 @@ h1 {
   box-shadow: 0 8px 18px rgba(30, 38, 33, 0.1);
   color: var(--ink);
   cursor: pointer;
-  font-size: clamp(1.08rem, 4.4vmin, 2.05rem);
+  font-size: var(--cell-font-size);
   font-weight: 900;
   line-height: 1;
   user-select: none;
@@ -701,6 +778,17 @@ h1 {
   }
 }
 
+@media (max-width: 1100px) and (min-width: 821px) {
+  .topbar {
+    grid-template-columns: minmax(190px, 1fr) auto auto;
+  }
+
+  .mode-switch {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+}
+
 @media (max-width: 820px) {
   .app-shell {
     width: min(100vw - 20px, 680px);
@@ -714,6 +802,7 @@ h1 {
   }
 
   .stats,
+  .mode-switch,
   .actions {
     width: 100%;
   }
@@ -730,6 +819,16 @@ h1 {
   .actions {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .mode-switch {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .mode-button {
+    min-width: 0;
+    padding: 0 6px;
+    font-size: 0.82rem;
   }
 
   .play-surface {

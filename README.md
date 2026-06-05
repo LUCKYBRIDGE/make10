@@ -20,6 +20,8 @@ node --check app.js
 
 - Numbers are scattered at irregular positions instead of arranged in a grid.
 - Larger boards show more numbers so multiple players have more separate targets.
+- Screen modes are available for mobile, tablet, and web/electronic-board play.
+- Each mode also adapts to compact, standard, wide, and large viewport sizes.
 - Recommended play count is 1-6 players, with up to 10 simultaneous touch inputs on supported hardware.
 - Drag across numbers to make a path.
 - The selected path clears only when its sum is exactly 10.
