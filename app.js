@@ -1,7 +1,7 @@
 const TARGET_SUM = 10;
 const MAX_TILE_VALUE = 9;
 const MIN_NODE_COUNT = 14;
-const MAX_NODE_COUNT = 44;
+const MAX_NODE_COUNT = 64;
 const DENSITY_STEPS = Object.freeze([
   { boardSize: 980, nodeCount: 38, minDistance: 12.8 },
   { boardSize: 860, nodeCount: 34, minDistance: 13.4 },
@@ -11,7 +11,7 @@ const DENSITY_STEPS = Object.freeze([
   { boardSize: 0, nodeCount: MIN_NODE_COUNT, minDistance: 17 }
 ]);
 const BOARD_MARGIN_PERCENT = 9;
-const BOARD_SPAN_PERCENT = 82;
+const MIN_BOARD_MARGIN_PERCENT = 4.5;
 const GAME_MODES = Object.freeze({
   mobile: {
     label: '모바일',
@@ -203,9 +203,23 @@ function clampNumber(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function getBoardPixelSize() {
+function getBoardMetrics() {
   const rect = boardEl.getBoundingClientRect();
-  return Math.min(rect.width || window.innerWidth, rect.height || window.innerHeight);
+  const width = rect.width || window.innerWidth || 1;
+  const height = rect.height || window.innerHeight || 1;
+  const shortSide = Math.max(1, Math.min(width, height));
+  const longSide = Math.max(width, height);
+  return {
+    width,
+    height,
+    shortSide,
+    longSide,
+    areaFactor: Math.min(2.8, (width * height) / (shortSide * shortSide))
+  };
+}
+
+function getBoardPixelSize() {
+  return getBoardMetrics().shortSide;
 }
 
 function getDensityForBoardSize(boardSize) {
@@ -214,8 +228,11 @@ function getDensityForBoardSize(boardSize) {
 
 function getResponsiveNodeCount() {
   const tuning = getTuning();
-  const baseCount = getDensityForBoardSize(getBoardPixelSize()).nodeCount + tuning.nodeDelta;
-  return clampNumber(baseCount, tuning.minNodes, tuning.maxNodes);
+  const metrics = getBoardMetrics();
+  const density = getDensityForBoardSize(metrics.shortSide);
+  const areaBonus = Math.round((metrics.areaFactor - 1) * 10);
+  const baseCount = density.nodeCount + areaBonus + tuning.nodeDelta;
+  return clampNumber(baseCount, Math.max(MIN_NODE_COUNT, tuning.minNodes), tuning.maxNodes);
 }
 
 function getCellDiameterPixels() {
@@ -235,30 +252,46 @@ function getMinimumNodeDistance(count) {
   const matchedStep = DENSITY_STEPS.find((step) => count >= step.nodeCount);
   const tuning = getTuning();
   const densityDistance = matchedStep?.minDistance || DENSITY_STEPS[DENSITY_STEPS.length - 1].minDistance;
-  const boardSize = getBoardPixelSize();
-  const visualDistance = ((getCellDiameterPixels() + tuning.minNodeGapPx) / Math.max(1, boardSize)) * 100;
+  const visualDistance = ((getCellDiameterPixels() + tuning.minNodeGapPx) / getBoardMetrics().shortSide) * 100;
   return Math.max(densityDistance, visualDistance);
 }
 
-function createRandomBoardPoint() {
+function getBoardMarginsPercent(metrics = getBoardMetrics()) {
+  const safePixels = getCellDiameterPixels() / 2 + 8;
   return {
-    x: BOARD_MARGIN_PERCENT + Math.random() * BOARD_SPAN_PERCENT,
-    y: BOARD_MARGIN_PERCENT + Math.random() * BOARD_SPAN_PERCENT
+    x: clampNumber((safePixels / metrics.width) * 100, MIN_BOARD_MARGIN_PERCENT, BOARD_MARGIN_PERCENT),
+    y: clampNumber((safePixels / metrics.height) * 100, MIN_BOARD_MARGIN_PERCENT, BOARD_MARGIN_PERCENT)
   };
+}
+
+function createRandomBoardPoint(margin = getBoardMarginsPercent()) {
+  return {
+    x: margin.x + Math.random() * (100 - margin.x * 2),
+    y: margin.y + Math.random() * (100 - margin.y * 2)
+  };
+}
+
+function getBoardDistance(first, second, metrics = getBoardMetrics()) {
+  return Math.hypot(
+    ((first.x - second.x) / 100) * metrics.width,
+    ((first.y - second.y) / 100) * metrics.height
+  ) / metrics.shortSide * 100;
 }
 
 function createScatterPositions(count) {
   const positions = [];
   const minDistance = getMinimumNodeDistance(count);
+  const metrics = getBoardMetrics();
+  const margin = getBoardMarginsPercent(metrics);
   for (let index = 0; index < count; index += 1) {
     let placed = false;
     let bestPoint = null;
     let bestDistance = -1;
     for (let attempt = 0; attempt < 1200; attempt += 1) {
-      const point = createRandomBoardPoint();
+      const point = createRandomBoardPoint(margin);
       const nearestDistance = positions.length === 0
         ? minDistance
-        : Math.min(...positions.map((existing) => distance(existing, point)));
+        : Math.min(...positions.map((existing) => getBoardDistance(existing, point, metrics)));
       if (nearestDistance > bestDistance) {
         bestDistance = nearestDistance;
         bestPoint = point;
@@ -271,7 +304,7 @@ function createScatterPositions(count) {
     }
 
     if (!placed) {
-      positions.push(bestPoint || createRandomBoardPoint());
+      positions.push(bestPoint || createRandomBoardPoint(margin));
     }
   }
   return positions;
@@ -539,7 +572,7 @@ function addTrailPoint(input, point) {
 
 function addAvoidPoint(input, point) {
   const last = input.avoidPoints[input.avoidPoints.length - 1];
-  if (last && distance(last, point) < 2) return;
+  if (last && getBoardDistance(last, point) < 2) return;
   input.avoidPoints.push(point);
   if (input.avoidPoints.length > 28) input.avoidPoints.shift();
 }
@@ -802,7 +835,7 @@ function getNearestNodeIdAtBoardPoint(point, hitRadiusPercent, pointerId) {
   nodes.forEach((node) => {
     if (resolvingIds.has(node.id)) return;
     if (isLockedByAnotherInput(pointerId, node.id)) return;
-    const nodeDistance = distance(point, node);
+    const nodeDistance = getBoardDistance(point, node);
     if (nodeDistance <= nearestDistance) {
       nearestDistance = nodeDistance;
       nearestId = node.id;
@@ -812,24 +845,37 @@ function getNearestNodeIdAtBoardPoint(point, hitRadiusPercent, pointerId) {
 }
 
 function getSegmentHit(point, start, end) {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
+  const metrics = getBoardMetrics();
+  const normalizedPoint = {
+    x: (point.x / 100) * metrics.width,
+    y: (point.y / 100) * metrics.height
+  };
+  const normalizedStart = {
+    x: (start.x / 100) * metrics.width,
+    y: (start.y / 100) * metrics.height
+  };
+  const normalizedEnd = {
+    x: (end.x / 100) * metrics.width,
+    y: (end.y / 100) * metrics.height
+  };
+  const dx = normalizedEnd.x - normalizedStart.x;
+  const dy = normalizedEnd.y - normalizedStart.y;
   const lengthSquared = dx * dx + dy * dy;
   if (lengthSquared === 0) {
     return {
-      distance: distance(point, start),
+      distance: distance(normalizedPoint, normalizedStart) / metrics.shortSide * 100,
       t: 0
     };
   }
 
-  const rawT = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared;
+  const rawT = ((normalizedPoint.x - normalizedStart.x) * dx + (normalizedPoint.y - normalizedStart.y) * dy) / lengthSquared;
   const t = Math.max(0, Math.min(1, rawT));
   const projection = {
-    x: start.x + dx * t,
-    y: start.y + dy * t
+    x: normalizedStart.x + dx * t,
+    y: normalizedStart.y + dy * t
   };
   return {
-    distance: distance(point, projection),
+    distance: distance(normalizedPoint, projection) / metrics.shortSide * 100,
     t
   };
 }
@@ -934,7 +980,7 @@ function getForwardAvoidPoints(input) {
   let previous = null;
   for (let index = input.avoidPoints.length - 2; index >= 0; index -= 1) {
     const candidate = input.avoidPoints[index];
-    if (distance(candidate, last) >= 1.5) {
+    if (getBoardDistance(candidate, last) >= 1.5) {
       previous = candidate;
       break;
     }
@@ -971,14 +1017,14 @@ function getForwardAvoidPoints(input) {
   return points;
 }
 
-function getCandidateAvoidScore(candidate, avoidPoints) {
+function getCandidateAvoidScore(candidate, avoidPoints, metrics = getBoardMetrics()) {
   if (avoidPoints.length === 0) return 100;
-  return Math.min(...avoidPoints.map((point) => distance(candidate, point)));
+  return Math.min(...avoidPoints.map((point) => getBoardDistance(candidate, point, metrics)));
 }
 
-function getNearestUsedDistance(candidate, usedPositions) {
+function getNearestUsedDistance(candidate, usedPositions, metrics = getBoardMetrics()) {
   if (usedPositions.length === 0) return 100;
-  return Math.min(...usedPositions.map((existing) => distance(existing, candidate)));
+  return Math.min(...usedPositions.map((existing) => getBoardDistance(existing, candidate, metrics)));
 }
 
 function createSpawnPosition(usedPositions, avoidPoints) {
@@ -988,13 +1034,15 @@ function createSpawnPosition(usedPositions, avoidPoints) {
   let fallbackDistance = -1;
   let fallbackAvoidScore = -1;
   const minDistance = getMinimumNodeDistance(nodes.length);
+  const metrics = getBoardMetrics();
+  const margin = getBoardMarginsPercent(metrics);
 
   for (let attempt = 0; attempt < SPAWN_POSITION_ATTEMPTS; attempt += 1) {
     const candidate = {
-      ...createRandomBoardPoint()
+      ...createRandomBoardPoint(margin)
     };
-    const nearestUsedDistance = getNearestUsedDistance(candidate, usedPositions);
-    const avoidScore = getCandidateAvoidScore(candidate, avoidPoints);
+    const nearestUsedDistance = getNearestUsedDistance(candidate, usedPositions, metrics);
+    const avoidScore = getCandidateAvoidScore(candidate, avoidPoints, metrics);
 
     if (
       nearestUsedDistance > fallbackDistance ||
