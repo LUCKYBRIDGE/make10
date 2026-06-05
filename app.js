@@ -1,0 +1,993 @@
+const TARGET_SUM = 10;
+const MAX_TILE_VALUE = 9;
+const MIN_NODE_COUNT = 18;
+const MAX_NODE_COUNT = 38;
+const DENSITY_STEPS = Object.freeze([
+  { boardSize: 980, nodeCount: 38, minDistance: 12.8 },
+  { boardSize: 860, nodeCount: 34, minDistance: 13.4 },
+  { boardSize: 740, nodeCount: 30, minDistance: 14.2 },
+  { boardSize: 620, nodeCount: 26, minDistance: 15 },
+  { boardSize: 500, nodeCount: 22, minDistance: 16 },
+  { boardSize: 0, nodeCount: MIN_NODE_COUNT, minDistance: 17 }
+]);
+const BOARD_MARGIN_PERCENT = 9;
+const BOARD_SPAN_PERCENT = 82;
+const MIN_NODE_GAP_PX = 18;
+const START_HIT_RADIUS_PERCENT = 3.8;
+const MOVE_HIT_RADIUS_PERCENT = 3.1;
+const TRAIL_POINT_MIN_DISTANCE = 7;
+const BASE_SCORE = 100;
+const EXTRA_NODE_SCORE = 45;
+const COMBO_SCORE = 25;
+const MAX_COMBO_BONUS = 100;
+const MAX_EFFECT_ELEMENTS = 70;
+const SPAWN_POSITION_ATTEMPTS = 640;
+const READY_COLOR = '#d88416';
+const OVER_TARGET_COLOR = '#cf4d5e';
+const EFFECT_COLORS = Object.freeze(['#16805c', '#d88416', '#3774a5', '#cf4d5e']);
+const INPUT_COLORS = Object.freeze([
+  '#3774a5',
+  '#16805c',
+  '#d88416',
+  '#cf4d5e',
+  '#6d5bd0',
+  '#008b8b'
+]);
+
+const boardEl = document.getElementById('board');
+const effectsLayerEl = document.getElementById('effectsLayer');
+const lineLayerEl = document.getElementById('lineLayer');
+const scoreEl = document.getElementById('scoreValue');
+const comboEl = document.getElementById('comboValue');
+const feedbackEl = document.getElementById('feedback');
+const progressFillEl = document.getElementById('progressFill');
+const newBoardButton = document.getElementById('newBoardButton');
+
+let nodes = [];
+let score = 0;
+let combo = 0;
+let focusedPointerId = null;
+let resolvingIds = new Set();
+const activeInputs = new Map();
+let nextInputColorIndex = 0;
+let audioContext = null;
+const effectElements = [];
+
+function randomValue() {
+  return 1 + Math.floor(Math.random() * MAX_TILE_VALUE);
+}
+
+function setFeedback(message, tone = 'neutral') {
+  feedbackEl.textContent = message;
+  feedbackEl.className = `feedback${tone === 'success' ? ' success' : ''}${tone === 'error' ? ' error' : ''}`;
+}
+
+function hexToRgba(hex, alpha) {
+  const normalized = hex.replace('#', '');
+  const value = Number.parseInt(normalized, 16);
+  const red = (value >> 16) & 255;
+  const green = (value >> 8) & 255;
+  const blue = value & 255;
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
+function distance(first, second) {
+  return Math.hypot(first.x - second.x, first.y - second.y);
+}
+
+function getBoardPixelSize() {
+  const rect = boardEl.getBoundingClientRect();
+  return Math.min(rect.width || window.innerWidth, rect.height || window.innerHeight);
+}
+
+function getDensityForBoardSize(boardSize) {
+  return DENSITY_STEPS.find((step) => boardSize >= step.boardSize) || DENSITY_STEPS[DENSITY_STEPS.length - 1];
+}
+
+function getResponsiveNodeCount() {
+  return Math.min(MAX_NODE_COUNT, getDensityForBoardSize(getBoardPixelSize()).nodeCount);
+}
+
+function getCellDiameterPixels() {
+  const cell = boardEl.querySelector('.cell');
+  if (cell) {
+    const computedWidth = Number.parseFloat(window.getComputedStyle(cell).width);
+    if (Number.isFinite(computedWidth)) return computedWidth;
+  }
+
+  const viewportMin = Math.min(window.innerWidth, window.innerHeight);
+  return Math.min(60, Math.max(40, viewportMin * 0.07));
+}
+
+function getMinimumNodeDistance(count) {
+  const matchedStep = DENSITY_STEPS.find((step) => count >= step.nodeCount);
+  const densityDistance = matchedStep?.minDistance || DENSITY_STEPS[DENSITY_STEPS.length - 1].minDistance;
+  const boardSize = getBoardPixelSize();
+  const visualDistance = ((getCellDiameterPixels() + MIN_NODE_GAP_PX) / Math.max(1, boardSize)) * 100;
+  return Math.max(densityDistance, visualDistance);
+}
+
+function createRandomBoardPoint() {
+  return {
+    x: BOARD_MARGIN_PERCENT + Math.random() * BOARD_SPAN_PERCENT,
+    y: BOARD_MARGIN_PERCENT + Math.random() * BOARD_SPAN_PERCENT
+  };
+}
+
+function createScatterPositions(count) {
+  const positions = [];
+  const minDistance = getMinimumNodeDistance(count);
+  for (let index = 0; index < count; index += 1) {
+    let placed = false;
+    let bestPoint = null;
+    let bestDistance = -1;
+    for (let attempt = 0; attempt < 1200; attempt += 1) {
+      const point = createRandomBoardPoint();
+      const nearestDistance = positions.length === 0
+        ? minDistance
+        : Math.min(...positions.map((existing) => distance(existing, point)));
+      if (nearestDistance > bestDistance) {
+        bestDistance = nearestDistance;
+        bestPoint = point;
+      }
+      if (nearestDistance >= minDistance) {
+        positions.push(point);
+        placed = true;
+        break;
+      }
+    }
+
+    if (!placed) {
+      positions.push(bestPoint || createRandomBoardPoint());
+    }
+  }
+  return positions;
+}
+
+function createNodes(values) {
+  const positions = createScatterPositions(values.length);
+  return values.map((value, id) => ({
+    id,
+    value,
+    x: positions[id].x,
+    y: positions[id].y
+  }));
+}
+
+function getNodeById(id) {
+  return nodes.find((node) => node.id === id) || null;
+}
+
+function getFocusedInput() {
+  return activeInputs.get(focusedPointerId) || null;
+}
+
+function getFocusedSelectedIds() {
+  return getFocusedInput()?.selectedIds || [];
+}
+
+function getSelectedSum(ids = getFocusedSelectedIds()) {
+  return ids.reduce((sum, id) => sum + (getNodeById(id)?.value || 0), 0);
+}
+
+function updateStats() {
+  scoreEl.textContent = String(score);
+  comboEl.textContent = String(combo);
+  progressFillEl.style.width = `${score % 1000 / 10}%`;
+}
+
+function ensureAudioContext() {
+  if (audioContext) return audioContext;
+  const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextConstructor) return null;
+  audioContext = new AudioContextConstructor();
+  return audioContext;
+}
+
+function resumeAudioContext() {
+  const audio = ensureAudioContext();
+  if (audio && typeof audio.resume === 'function') {
+    audio.resume().catch(() => {});
+  }
+  return audio;
+}
+
+function playTone(audio, frequency, startOffset, duration, volume, type = 'sine') {
+  const oscillator = audio.createOscillator();
+  const gain = audio.createGain();
+  const startTime = audio.currentTime + startOffset;
+  const endTime = startTime + duration;
+
+  oscillator.type = type;
+  oscillator.frequency.setValueAtTime(frequency, startTime);
+  gain.gain.setValueAtTime(0.0001, startTime);
+  gain.gain.exponentialRampToValueAtTime(volume, startTime + 0.025);
+  gain.gain.exponentialRampToValueAtTime(0.0001, endTime);
+  oscillator.connect(gain);
+  gain.connect(audio.destination);
+  oscillator.start(startTime);
+  oscillator.stop(endTime + 0.02);
+}
+
+function playSuccessSound(comboLevel) {
+  const audio = resumeAudioContext();
+  if (!audio) return;
+
+  const comboLift = Math.min(7, comboLevel - 1) * 14;
+  const notes = [523.25 + comboLift, 659.25 + comboLift, 783.99 + comboLift];
+  notes.forEach((frequency, index) => {
+    playTone(audio, frequency, index * 0.055, 0.18, 0.09, 'triangle');
+  });
+
+  if (comboLevel >= 2) {
+    playTone(audio, 1046.5 + comboLift, 0.19, 0.22, 0.075, 'sine');
+  }
+
+  if (comboLevel >= 5) {
+    playTone(audio, 1318.5 + comboLift, 0.27, 0.2, 0.06, 'triangle');
+  }
+}
+
+function playErrorSound() {
+  const audio = resumeAudioContext();
+  if (!audio) return;
+
+  playTone(audio, 246.94, 0, 0.12, 0.05, 'sine');
+  playTone(audio, 196, 0.085, 0.16, 0.04, 'sine');
+}
+
+function getActiveSelectedIds() {
+  const selected = new Set();
+  activeInputs.forEach((input) => {
+    input.selectedIds.forEach((id) => selected.add(id));
+  });
+  return selected;
+}
+
+function getLockedSelectedIds() {
+  const locked = new Set();
+  activeInputs.forEach((input) => {
+    input.selectedIds.forEach((id) => locked.add(id));
+  });
+  return locked;
+}
+
+function getSelectionOwners() {
+  const owners = new Map();
+  activeInputs.forEach((input) => {
+    const sum = getSelectedSum(input.selectedIds);
+    const status = sum === TARGET_SUM ? 'ready' : sum > TARGET_SUM ? 'over-target' : 'active';
+    input.selectedIds.forEach((id) => owners.set(id, {
+      color: input.color,
+      glow: hexToRgba(input.color, status === 'ready' ? 0.28 : 0.18),
+      status
+    }));
+  });
+  return owners;
+}
+
+function getNodeElement(id) {
+  return boardEl.querySelector(`[data-id="${id}"]`);
+}
+
+function getNodeCenter(id) {
+  const node = getNodeById(id);
+  const surfaceRect = boardEl.parentElement.getBoundingClientRect();
+  const boardRect = boardEl.getBoundingClientRect();
+  return {
+    x: boardRect.left + (node.x / 100) * boardRect.width - surfaceRect.left,
+    y: boardRect.top + (node.y / 100) * boardRect.height - surfaceRect.top
+  };
+}
+
+function getPointerPoint(event) {
+  const surfaceRect = boardEl.parentElement.getBoundingClientRect();
+  return {
+    x: event.clientX - surfaceRect.left,
+    y: event.clientY - surfaceRect.top
+  };
+}
+
+function getBoardPercentPoint(event) {
+  const boardRect = boardEl.getBoundingClientRect();
+  return {
+    x: ((event.clientX - boardRect.left) / boardRect.width) * 100,
+    y: ((event.clientY - boardRect.top) / boardRect.height) * 100
+  };
+}
+
+function getBoardPercentPointFromClient(clientX, clientY) {
+  const boardRect = boardEl.getBoundingClientRect();
+  return {
+    x: ((clientX - boardRect.left) / boardRect.width) * 100,
+    y: ((clientY - boardRect.top) / boardRect.height) * 100
+  };
+}
+
+function isInsideBoardPoint(point) {
+  return point.x >= 0 && point.x <= 100 && point.y >= 0 && point.y <= 100;
+}
+
+function renderBoard(extraClasses = new Map()) {
+  const selectedOwners = getSelectionOwners();
+  const locked = getLockedSelectedIds();
+  boardEl.innerHTML = '';
+  nodes.forEach((node) => {
+    const button = document.createElement('button');
+    const classes = ['cell'];
+    if (resolvingIds.has(node.id)) classes.push('breaking');
+    const selectedOwner = selectedOwners.get(node.id);
+    if (selectedOwner) classes.push('selected', selectedOwner.status);
+    if (locked.has(node.id)) classes.push('locked');
+    if (extraClasses.has(node.id)) classes.push(...extraClasses.get(node.id));
+
+    button.type = 'button';
+    button.className = classes.join(' ');
+    button.dataset.id = node.id;
+    button.dataset.value = node.value;
+    button.style.left = `${node.x}%`;
+    button.style.top = `${node.y}%`;
+    if (selectedOwner) {
+      button.style.setProperty('--input-color', selectedOwner.status === 'ready' ? READY_COLOR : selectedOwner.color);
+      button.style.setProperty('--input-glow', selectedOwner.status === 'ready' ? hexToRgba(READY_COLOR, 0.28) : selectedOwner.glow);
+    }
+    button.setAttribute('aria-label', `${node.value}`);
+    button.textContent = String(node.value);
+    boardEl.appendChild(button);
+  });
+}
+
+function markCells(ids, className) {
+  ids.forEach((id) => getNodeElement(id)?.classList.add(className));
+}
+
+function markTemporary(ids, className, ms = 320) {
+  markCells(ids, className);
+  window.setTimeout(() => {
+    ids.forEach((id) => getNodeElement(id)?.classList.remove(className));
+  }, ms);
+}
+
+function pointsToSmoothPath(points) {
+  if (points.length === 0) return '';
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+
+  const pathParts = [`M ${points[0].x} ${points[0].y}`];
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const controlX = (previous.x + current.x) / 2;
+    const controlY = (previous.y + current.y) / 2;
+    pathParts.push(`Q ${previous.x} ${previous.y} ${controlX} ${controlY}`);
+  }
+
+  const last = points[points.length - 1];
+  pathParts.push(`T ${last.x} ${last.y}`);
+  return pathParts.join(' ');
+}
+
+function addTrailPoint(input, point) {
+  const last = input.trailPoints[input.trailPoints.length - 1];
+  if (last && Math.hypot(last.x - point.x, last.y - point.y) < TRAIL_POINT_MIN_DISTANCE) return;
+  input.trailPoints.push(point);
+}
+
+function addAvoidPoint(input, point) {
+  const last = input.avoidPoints[input.avoidPoints.length - 1];
+  if (last && distance(last, point) < 2) return;
+  input.avoidPoints.push(point);
+  if (input.avoidPoints.length > 28) input.avoidPoints.shift();
+}
+
+function createInput(pointerId, event) {
+  const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  const color = INPUT_COLORS[nextInputColorIndex % INPUT_COLORS.length];
+  pathEl.classList.add('active-path');
+  pathEl.setAttribute('d', '');
+  pathEl.style.stroke = color;
+  nextInputColorIndex += 1;
+  lineLayerEl.appendChild(pathEl);
+
+  const input = {
+    color,
+    isFinishing: false,
+    pathFrameId: null,
+    visualSum: null,
+    wasReady: false,
+    pathEl,
+    selectedIds: [],
+    trailPoints: [getPointerPoint(event)],
+    avoidPoints: [getBoardPercentPoint(event)]
+  };
+  activeInputs.set(pointerId, input);
+  focusedPointerId = pointerId;
+  return input;
+}
+
+function removeInput(pointerId) {
+  const input = activeInputs.get(pointerId);
+  if (input) {
+    if (input.pathFrameId !== null) {
+      window.cancelAnimationFrame(input.pathFrameId);
+      input.pathFrameId = null;
+    }
+    input.pathEl.remove();
+  }
+  activeInputs.delete(pointerId);
+  if (focusedPointerId === pointerId) {
+    focusedPointerId = activeInputs.size > 0 ? [...activeInputs.keys()][activeInputs.size - 1] : null;
+  }
+}
+
+function clearAllInputs() {
+  activeInputs.forEach((input) => input.pathEl.remove());
+  activeInputs.clear();
+  focusedPointerId = null;
+}
+
+function showActivePath(pointerId, event) {
+  const input = activeInputs.get(pointerId);
+  if (!input) return;
+  addTrailPoint(input, getPointerPoint(event));
+  addAvoidPoint(input, getBoardPercentPoint(event));
+  input.pathEl.style.opacity = '0.78';
+  syncInputVisualState(input);
+  schedulePathRender(input);
+}
+
+function syncInputVisualState(input) {
+  const sum = getSelectedSum(input.selectedIds);
+  if (sum === input.visualSum) return;
+  input.visualSum = sum;
+
+  const isReady = sum === TARGET_SUM;
+  const isOverTarget = sum > TARGET_SUM;
+
+  input.pathEl.classList.toggle('ready', isReady);
+  input.pathEl.classList.toggle('over-target', isOverTarget);
+  input.pathEl.style.stroke = isReady ? READY_COLOR : isOverTarget ? OVER_TARGET_COLOR : input.color;
+
+  if (isReady && !input.wasReady) {
+    spawnReadyPreview(input);
+  }
+  input.wasReady = isReady;
+}
+
+function schedulePathRender(input) {
+  if (input.pathFrameId !== null) return;
+  input.pathFrameId = window.requestAnimationFrame(() => {
+    input.pathFrameId = null;
+    input.pathEl.setAttribute('d', pointsToSmoothPath(input.trailPoints));
+  });
+}
+
+function getSelectionCenter(ids) {
+  const centers = ids.map(getNodeCenter);
+  return centers.reduce((center, point) => ({
+    x: center.x + point.x / centers.length,
+    y: center.y + point.y / centers.length
+  }), { x: 0, y: 0 });
+}
+
+function addEffectElement(className, point, ms, text = '') {
+  const element = document.createElement('span');
+  element.className = className;
+  element.style.left = `${point.x}px`;
+  element.style.top = `${point.y}px`;
+  element.textContent = text;
+  appendEffectElement(element, ms);
+  return element;
+}
+
+function appendEffectElement(element, ms) {
+  effectsLayerEl.appendChild(element);
+  effectElements.push(element);
+  while (effectElements.length > MAX_EFFECT_ELEMENTS) {
+    effectElements.shift()?.remove();
+  }
+  window.setTimeout(() => {
+    const index = effectElements.indexOf(element);
+    if (index >= 0) effectElements.splice(index, 1);
+    element.remove();
+  }, ms);
+}
+
+function getEffectTargetIds(ids, maxCount) {
+  if (ids.length <= maxCount) return ids;
+  if (maxCount <= 1) return [ids[0]];
+
+  const step = (ids.length - 1) / (maxCount - 1);
+  return Array.from({ length: maxCount }, (_, index) => ids[Math.round(index * step)]);
+}
+
+function spawnScreenFlash(comboLevel) {
+  const flash = document.createElement('span');
+  flash.className = `success-flash${comboLevel >= 5 ? ' fever' : comboLevel >= 2 ? ' combo' : ''}`;
+  appendEffectElement(flash, 520);
+}
+
+function spawnReadyPreview(input) {
+  if (input.selectedIds.length < 2) return;
+
+  const center = getSelectionCenter(input.selectedIds);
+  const preview = addEffectElement('ready-pop', center, 580, '10');
+  preview.style.setProperty('--input-color', READY_COLOR);
+}
+
+function spawnSuccessRings(ids, comboLevel, inputColor) {
+  getEffectTargetIds(ids, 5).forEach((id) => {
+    const ring = addEffectElement('success-ring', getNodeCenter(id), 680);
+    ring.style.borderColor = inputColor;
+    ring.style.boxShadow = `0 0 0 5px ${hexToRgba(inputColor, 0.16)}`;
+    ring.style.setProperty('--ring-scale', comboLevel >= 5 ? '2.8' : comboLevel >= 3 ? '2.4' : '2');
+  });
+}
+
+function spawnScorePop(ids, earned, comboLevel, inputColor) {
+  const center = getSelectionCenter(ids);
+  const scorePop = addEffectElement('score-pop', center, 780, `+${earned}`);
+  scorePop.style.color = inputColor;
+
+  if (comboLevel >= 2) {
+    const comboPop = addEffectElement('combo-pop', {
+      x: center.x,
+      y: center.y - 52
+    }, 940, `${comboLevel}콤보`);
+    if (comboLevel >= 5) comboPop.classList.add('fever');
+    if (comboLevel >= 3) comboPop.classList.add('strong');
+    comboPop.style.setProperty('--combo-scale', String(Math.min(1.35, 1 + comboLevel * 0.035)));
+  }
+}
+
+function spawnParticles(ids, comboLevel = 1, inputColor = EFFECT_COLORS[0]) {
+  const particleCount = comboLevel >= 5 ? 8 : comboLevel >= 3 ? 6 : 4;
+  const spread = comboLevel >= 5 ? 62 : comboLevel >= 3 ? 54 : 40;
+  getEffectTargetIds(ids, comboLevel >= 5 ? 5 : 4).forEach((id) => {
+    const center = getNodeCenter(id);
+    for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
+      const angle = (Math.PI * 2 * particleIndex) / particleCount;
+      const distanceOffset = spread + (particleIndex % 3) * 8;
+      const particle = document.createElement('span');
+      const color = particleIndex % 2 === 0 ? inputColor : EFFECT_COLORS[particleIndex % EFFECT_COLORS.length];
+      particle.className = 'particle';
+      particle.style.left = `${center.x}px`;
+      particle.style.top = `${center.y}px`;
+      particle.style.background = color;
+      particle.style.color = color;
+      particle.style.setProperty('--dx', `${Math.cos(angle) * distanceOffset}px`);
+      particle.style.setProperty('--dy', `${Math.sin(angle) * distanceOffset}px`);
+      appendEffectElement(particle, 640);
+    }
+  });
+}
+
+function spawnSuccessEffects(ids, earned, comboLevel, inputColor) {
+  spawnScreenFlash(comboLevel);
+  spawnSuccessRings(ids, comboLevel, inputColor);
+  spawnScorePop(ids, earned, comboLevel, inputColor);
+  spawnParticles(ids, comboLevel, inputColor);
+}
+
+function spawnFailureEffects(ids, inputColor) {
+  const center = getSelectionCenter(ids);
+  const missPop = addEffectElement('miss-pop', center, 560, '다시');
+  missPop.style.color = OVER_TARGET_COLOR;
+
+  getEffectTargetIds(ids, 4).forEach((id) => {
+    const point = getNodeCenter(id);
+    const ring = addEffectElement('miss-ring', point, 420);
+    ring.style.borderColor = hexToRgba(inputColor, 0.38);
+  });
+}
+
+function spawnNewNodeEffects(ids, inputColor) {
+  getEffectTargetIds(ids, 5).forEach((id) => {
+    const point = getNodeCenter(id);
+    const spark = addEffectElement('spawn-spark', point, 520);
+    spark.style.setProperty('--input-color', inputColor);
+    spark.style.setProperty('--input-glow', hexToRgba(inputColor, 0.16));
+  });
+}
+
+function pulseStat(element, className) {
+  const stat = element.parentElement;
+  if (!stat) return;
+  stat.classList.remove(className);
+  void stat.offsetWidth;
+  stat.classList.add(className);
+  window.setTimeout(() => stat.classList.remove(className), 420);
+}
+
+function pulseSuccessStats(comboLevel) {
+  pulseStat(scoreEl, 'score-hit');
+  if (comboLevel >= 2) pulseStat(comboEl, 'combo-hit');
+}
+
+function pulseComboBreak() {
+  pulseStat(comboEl, 'combo-break');
+}
+
+function getTargetId(event) {
+  return getNearestNodeId(event.clientX, event.clientY, START_HIT_RADIUS_PERCENT, event.pointerId);
+}
+
+function getIdsAtPointerPath(pointerId, clientX, clientY) {
+  const input = activeInputs.get(pointerId);
+  if (!input) return [];
+
+  const currentPoint = getBoardPercentPointFromClient(clientX, clientY);
+  const previousPoint = input.avoidPoints[input.avoidPoints.length - 1] || currentPoint;
+  const ids = getNodeIdsAlongSegment(previousPoint, currentPoint, MOVE_HIT_RADIUS_PERCENT, pointerId);
+  const directId = getNearestNodeIdAtBoardPoint(currentPoint, MOVE_HIT_RADIUS_PERCENT, pointerId);
+  if (directId !== null && !ids.includes(directId)) ids.push(directId);
+  return ids;
+}
+
+function getNearestNodeId(clientX, clientY, hitRadiusPercent, pointerId) {
+  const point = getBoardPercentPointFromClient(clientX, clientY);
+  return getNearestNodeIdAtBoardPoint(point, hitRadiusPercent, pointerId);
+}
+
+function getNearestNodeIdAtBoardPoint(point, hitRadiusPercent, pointerId) {
+  if (!isInsideBoardPoint(point)) return null;
+
+  let nearestId = null;
+  let nearestDistance = hitRadiusPercent;
+  nodes.forEach((node) => {
+    if (resolvingIds.has(node.id)) return;
+    if (isLockedByAnotherInput(pointerId, node.id)) return;
+    const nodeDistance = distance(point, node);
+    if (nodeDistance <= nearestDistance) {
+      nearestDistance = nodeDistance;
+      nearestId = node.id;
+    }
+  });
+  return nearestId;
+}
+
+function getSegmentHit(point, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) {
+    return {
+      distance: distance(point, start),
+      t: 0
+    };
+  }
+
+  const rawT = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared;
+  const t = Math.max(0, Math.min(1, rawT));
+  const projection = {
+    x: start.x + dx * t,
+    y: start.y + dy * t
+  };
+  return {
+    distance: distance(point, projection),
+    t
+  };
+}
+
+function getNodeIdsAlongSegment(start, end, hitRadiusPercent, pointerId) {
+  const input = activeInputs.get(pointerId);
+  const previousId = input ? input.selectedIds[input.selectedIds.length - 2] : null;
+  const hits = [];
+
+  nodes.forEach((node) => {
+    if (resolvingIds.has(node.id)) return;
+    if (isLockedByAnotherInput(pointerId, node.id)) return;
+    if (input?.selectedIds.includes(node.id) && node.id !== previousId) return;
+
+    const hit = getSegmentHit(node, start, end);
+    if (hit.distance <= hitRadiusPercent) {
+      hits.push({
+        id: node.id,
+        t: hit.t,
+        distance: hit.distance
+      });
+    }
+  });
+
+  hits.sort((first, second) => first.t - second.t || first.distance - second.distance);
+  return hits.map((hit) => hit.id);
+}
+
+function isLockedByAnotherInput(pointerId, id) {
+  for (const [otherPointerId, input] of activeInputs.entries()) {
+    if (otherPointerId !== pointerId && input.selectedIds.includes(id)) return true;
+  }
+  return false;
+}
+
+function setSelectionFeedback(input) {
+  const sum = getSelectedSum(input.selectedIds);
+  setFeedback(sum === TARGET_SUM ? '합 10입니다. 손을 떼면 사라집니다.' : `지금 더한 값 ${sum}`, sum > TARGET_SUM ? 'error' : 'neutral');
+}
+
+function commitSelectionChange(input) {
+  renderBoard();
+  updateStats();
+  setSelectionFeedback(input);
+}
+
+function addIdToSelection(pointerId, id, shouldCommit = true) {
+  const input = activeInputs.get(pointerId);
+  const node = getNodeById(id);
+  if (!input || !node || resolvingIds.has(id) || isLockedByAnotherInput(pointerId, id)) return false;
+
+  const lastId = input.selectedIds[input.selectedIds.length - 1];
+  if (lastId === id) return false;
+
+  const previousId = input.selectedIds[input.selectedIds.length - 2];
+  if (previousId === id) {
+    input.selectedIds.pop();
+    focusedPointerId = pointerId;
+    if (shouldCommit) commitSelectionChange(input);
+    return true;
+  }
+
+  if (input.selectedIds.includes(id)) return false;
+
+  input.selectedIds.push(id);
+  focusedPointerId = pointerId;
+  if (shouldCommit) commitSelectionChange(input);
+  return true;
+}
+
+function addIdsAtPointerPath(pointerId, event) {
+  const input = activeInputs.get(pointerId);
+  if (!input) return;
+
+  let changed = false;
+  getIdsAtPointerPath(pointerId, event.clientX, event.clientY).forEach((id) => {
+    changed = addIdToSelection(pointerId, id, false) || changed;
+  });
+  if (changed) commitSelectionChange(input);
+}
+
+function getSpawnAvoidPoints(pointerId, finishedInput) {
+  const points = [...(finishedInput?.avoidPoints || [])];
+  points.push(...getForwardAvoidPoints(finishedInput));
+  activeInputs.forEach((input, otherPointerId) => {
+    if (otherPointerId !== pointerId) {
+      points.push(...input.avoidPoints.slice(-10));
+      points.push(...getForwardAvoidPoints(input));
+    }
+  });
+  return points;
+}
+
+function clampPercent(value) {
+  return Math.max(6, Math.min(94, value));
+}
+
+function getForwardAvoidPoints(input) {
+  if (!input || input.avoidPoints.length < 2) return [];
+
+  const last = input.avoidPoints[input.avoidPoints.length - 1];
+  let previous = null;
+  for (let index = input.avoidPoints.length - 2; index >= 0; index -= 1) {
+    const candidate = input.avoidPoints[index];
+    if (distance(candidate, last) >= 1.5) {
+      previous = candidate;
+      break;
+    }
+  }
+  if (!previous) return [];
+
+  const dx = last.x - previous.x;
+  const dy = last.y - previous.y;
+  const magnitude = Math.hypot(dx, dy);
+  if (magnitude < 0.01) return [];
+
+  const unitX = dx / magnitude;
+  const unitY = dy / magnitude;
+  const perpX = -unitY;
+  const perpY = unitX;
+  const points = [];
+
+  [12, 24, 36].forEach((forwardDistance) => {
+    points.push({
+      x: clampPercent(last.x + unitX * forwardDistance),
+      y: clampPercent(last.y + unitY * forwardDistance)
+    });
+  });
+
+  [18, 30].forEach((forwardDistance) => {
+    [-9, 9].forEach((sideDistance) => {
+      points.push({
+        x: clampPercent(last.x + unitX * forwardDistance + perpX * sideDistance),
+        y: clampPercent(last.y + unitY * forwardDistance + perpY * sideDistance)
+      });
+    });
+  });
+
+  return points;
+}
+
+function getCandidateAvoidScore(candidate, avoidPoints) {
+  if (avoidPoints.length === 0) return 100;
+  return Math.min(...avoidPoints.map((point) => distance(candidate, point)));
+}
+
+function getNearestUsedDistance(candidate, usedPositions) {
+  if (usedPositions.length === 0) return 100;
+  return Math.min(...usedPositions.map((existing) => distance(existing, candidate)));
+}
+
+function createSpawnPosition(usedPositions, avoidPoints) {
+  let bestCandidate = null;
+  let bestScore = -1;
+  let fallbackCandidate = null;
+  let fallbackDistance = -1;
+  let fallbackAvoidScore = -1;
+  const minDistance = getMinimumNodeDistance(nodes.length);
+
+  for (let attempt = 0; attempt < SPAWN_POSITION_ATTEMPTS; attempt += 1) {
+    const candidate = {
+      ...createRandomBoardPoint()
+    };
+    const nearestUsedDistance = getNearestUsedDistance(candidate, usedPositions);
+    const avoidScore = getCandidateAvoidScore(candidate, avoidPoints);
+
+    if (
+      nearestUsedDistance > fallbackDistance ||
+      (nearestUsedDistance === fallbackDistance && avoidScore > fallbackAvoidScore)
+    ) {
+      fallbackDistance = nearestUsedDistance;
+      fallbackAvoidScore = avoidScore;
+      fallbackCandidate = candidate;
+    }
+
+    if (nearestUsedDistance < minDistance) {
+      continue;
+    }
+
+    if (avoidScore > bestScore) {
+      bestScore = avoidScore;
+      bestCandidate = candidate;
+    }
+
+    if (avoidScore >= 48) break;
+  }
+
+  return bestCandidate || fallbackCandidate;
+}
+
+function replaceSelectedNodes(ids, avoidPoints = []) {
+  const usedPositions = nodes
+    .filter((node) => !ids.includes(node.id))
+    .map((node) => ({ x: node.x, y: node.y }));
+
+  nodes = nodes.map((node) => {
+    if (!ids.includes(node.id)) return node;
+
+    const position = createSpawnPosition(usedPositions, avoidPoints);
+    usedPositions.push(position);
+    return {
+      id: node.id,
+      value: randomValue(),
+      x: position.x,
+      y: position.y
+    };
+  });
+}
+
+function finishSelection(pointerId, event = null) {
+  const input = activeInputs.get(pointerId);
+  if (!input) return;
+  if (input.isFinishing) return;
+
+  input.isFinishing = true;
+  if (event) {
+    addIdsAtPointerPath(pointerId, event);
+    showActivePath(pointerId, event);
+  }
+
+  const path = [...input.selectedIds];
+  const sum = getSelectedSum(path);
+  const inputColor = input.color;
+  const avoidPoints = getSpawnAvoidPoints(pointerId, input);
+  removeInput(pointerId);
+  renderBoard();
+  updateStats();
+
+  if (path.length < 2) {
+    setFeedback('연결을 취소했습니다. 콤보는 유지됩니다.');
+    return;
+  }
+
+  if (sum < TARGET_SUM) {
+    setFeedback(`${sum}까지 더한 상태에서 멈췄습니다. 콤보는 유지됩니다.`);
+    return;
+  }
+
+  if (sum > TARGET_SUM) {
+    combo = 0;
+    updateStats();
+    markTemporary(path, 'wrong', 280);
+    playErrorSound();
+    spawnFailureEffects(path, inputColor);
+    pulseComboBreak();
+    setFeedback(`합이 ${sum}입니다. 콤보가 끊겼습니다.`, 'error');
+    return;
+  }
+
+  combo += 1;
+  const lengthBonus = Math.max(0, path.length - 2) * EXTRA_NODE_SCORE;
+  const comboBonus = Math.min(MAX_COMBO_BONUS, Math.max(0, combo - 1) * COMBO_SCORE);
+  const earned = BASE_SCORE + lengthBonus + comboBonus;
+  score += earned;
+  updateStats();
+  playSuccessSound(combo);
+  spawnSuccessEffects(path, earned, combo, inputColor);
+  pulseSuccessStats(combo);
+  path.forEach((id) => resolvingIds.add(id));
+  markCells(path, 'breaking');
+  setFeedback(`${path.length}개 숫자로 10을 만들었습니다. +${earned}점 · ${combo}콤보`, 'success');
+  window.setTimeout(() => {
+    replaceSelectedNodes(path, avoidPoints);
+    path.forEach((id) => resolvingIds.delete(id));
+    renderBoard(new Map(path.map((id) => [id, ['spawned']])));
+    spawnNewNodeEffects(path, inputColor);
+    updateStats();
+  }, 360);
+}
+
+function resetBoard(nextNodes, message) {
+  clearAllInputs();
+  nodes = nextNodes.map((node) => ({ ...node }));
+  score = 0;
+  combo = 0;
+  resolvingIds = new Set();
+  effectElements.length = 0;
+  effectsLayerEl.innerHTML = '';
+  renderBoard();
+  updateStats();
+  setFeedback(message);
+}
+
+function startNewBoard() {
+  const nodeCount = getResponsiveNodeCount();
+  resetBoard(
+    createNodes(Array.from({ length: nodeCount }, randomValue)),
+    `랜덤 배치입니다. ${nodeCount}개의 숫자를 이어 합 10을 만드세요.`
+  );
+}
+
+boardEl.addEventListener('pointerdown', (event) => {
+  const id = getTargetId(event);
+  if (id === null) return;
+
+  resumeAudioContext();
+  boardEl.setPointerCapture(event.pointerId);
+  createInput(event.pointerId, event);
+  addIdToSelection(event.pointerId, id);
+  showActivePath(event.pointerId, event);
+});
+
+boardEl.addEventListener('pointermove', (event) => {
+  if (!activeInputs.has(event.pointerId)) return;
+
+  addIdsAtPointerPath(event.pointerId, event);
+  showActivePath(event.pointerId, event);
+});
+
+boardEl.addEventListener('pointerup', (event) => {
+  finishSelection(event.pointerId, event);
+});
+
+boardEl.addEventListener('pointercancel', (event) => {
+  removeInput(event.pointerId);
+  renderBoard();
+  updateStats();
+});
+
+boardEl.addEventListener('lostpointercapture', (event) => {
+  if (!activeInputs.has(event.pointerId)) return;
+  finishSelection(event.pointerId);
+});
+
+newBoardButton.addEventListener('click', startNewBoard);
+
+startNewBoard();
