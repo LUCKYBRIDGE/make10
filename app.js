@@ -1,4 +1,6 @@
 const TARGET_SUM = 10;
+const GAME_DURATION_SECONDS = 60;
+const TIMER_WARNING_SECONDS = 10;
 const MAX_TILE_VALUE = 9;
 const MIN_NODE_COUNT = 14;
 const MAX_NODE_COUNT = 64;
@@ -124,6 +126,7 @@ const effectsLayerEl = document.getElementById('effectsLayer');
 const lineLayerEl = document.getElementById('lineLayer');
 const scoreEl = document.getElementById('scoreValue');
 const comboEl = document.getElementById('comboValue');
+const timerEl = document.getElementById('timerValue');
 const feedbackEl = document.getElementById('feedback');
 const progressFillEl = document.getElementById('progressFill');
 const newBoardButton = document.getElementById('newBoardButton');
@@ -132,6 +135,8 @@ const modeButtons = [...document.querySelectorAll('[data-mode-button]')];
 let nodes = [];
 let score = 0;
 let combo = 0;
+let remainingSeconds = GAME_DURATION_SECONDS;
+let gameActive = true;
 let currentModeKey = getInitialModeKey();
 let currentSizeTierKey = getSizeTierKey();
 let focusedPointerId = null;
@@ -141,6 +146,8 @@ let nextInputColorIndex = 0;
 let audioContext = null;
 let resizeFrameId = null;
 let pointerMoveFrameId = null;
+let timerIntervalId = null;
+let timerDeadline = 0;
 let tuningCache = null;
 let boardMetricsCache = null;
 let boardRectCache = null;
@@ -158,6 +165,52 @@ function randomValue() {
 function setFeedback(message, tone = 'neutral') {
   feedbackEl.textContent = message;
   feedbackEl.className = `feedback${tone === 'success' ? ' success' : ''}${tone === 'error' ? ' error' : ''}`;
+}
+
+function formatTimer(seconds) {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+function updateTimerDisplay() {
+  timerEl.textContent = formatTimer(remainingSeconds);
+  timerEl.parentElement?.classList.toggle('timer-ending', gameActive && remainingSeconds <= TIMER_WARNING_SECONDS);
+}
+
+function stopTimer() {
+  if (timerIntervalId !== null) {
+    window.clearInterval(timerIntervalId);
+    timerIntervalId = null;
+  }
+}
+
+function endGame() {
+  if (!gameActive) return;
+  gameActive = false;
+  remainingSeconds = 0;
+  stopTimer();
+  clearAllInputs();
+  syncBoardInteractionState();
+  updateStats();
+  updateTimerDisplay();
+  setFeedback(`시간 끝! 최종 점수는 ${score}점입니다. 새 판을 누르면 다시 시작합니다.`);
+}
+
+function tickTimer() {
+  if (!gameActive) return;
+  const nextRemainingSeconds = Math.max(0, Math.ceil((timerDeadline - Date.now()) / 1000));
+  if (nextRemainingSeconds === remainingSeconds) return;
+  remainingSeconds = nextRemainingSeconds;
+  updateTimerDisplay();
+  if (remainingSeconds === 0) endGame();
+}
+
+function startTimer() {
+  stopTimer();
+  gameActive = true;
+  remainingSeconds = GAME_DURATION_SECONDS;
+  timerDeadline = Date.now() + GAME_DURATION_SECONDS * 1000;
+  updateTimerDisplay();
+  timerIntervalId = window.setInterval(tickTimer, 1000);
 }
 
 function hexToRgba(hex, alpha) {
@@ -1282,6 +1335,7 @@ function resetBoard(nextNodes, message) {
   renderBoard();
   updateStats();
   setFeedback(message);
+  startTimer();
 }
 
 function startNewBoard() {
@@ -1313,6 +1367,10 @@ function handlePointerMove(event) {
 
 boardEl.addEventListener('pointerdown', (event) => {
   preventBoardGesture(event);
+  if (!gameActive) {
+    setFeedback(`시간 끝! 최종 점수는 ${score}점입니다. 새 판을 누르면 다시 시작합니다.`);
+    return;
+  }
   if (activeInputs.size >= MAX_ACTIVE_INPUTS && !activeInputs.has(event.pointerId)) return;
 
   const id = getTargetId(event);
