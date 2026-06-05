@@ -102,6 +102,7 @@ const EXTRA_NODE_SCORE = 45;
 const COMBO_SCORE = 25;
 const MAX_COMBO_BONUS = 100;
 const SPAWN_POSITION_ATTEMPTS = 640;
+const MAX_ACTIVE_INPUTS = 10;
 const READY_COLOR = '#d88416';
 const OVER_TARGET_COLOR = '#cf4d5e';
 const EFFECT_COLORS = Object.freeze(['#16805c', '#d88416', '#3774a5', '#cf4d5e']);
@@ -111,7 +112,11 @@ const INPUT_COLORS = Object.freeze([
   '#d88416',
   '#cf4d5e',
   '#6d5bd0',
-  '#008b8b'
+  '#008b8b',
+  '#c05621',
+  '#2563eb',
+  '#7c3aed',
+  '#0f766e'
 ]);
 
 const boardEl = document.getElementById('board');
@@ -468,6 +473,25 @@ function getNodeElement(id) {
   return boardEl.querySelector(`[data-id="${id}"]`);
 }
 
+function applyCellState(button, node, selectedOwners, locked, extraClasses = []) {
+  const selectedOwner = selectedOwners.get(node.id);
+  const statusClasses = ['selected', 'active', 'ready', 'over-target', 'locked'];
+  statusClasses.forEach((className) => button.classList.remove(className));
+  button.classList.toggle('breaking', resolvingIds.has(node.id));
+
+  if (selectedOwner) {
+    button.classList.add('selected', selectedOwner.status, 'locked');
+    button.style.setProperty('--input-color', selectedOwner.status === 'ready' ? READY_COLOR : selectedOwner.color);
+    button.style.setProperty('--input-glow', selectedOwner.status === 'ready' ? hexToRgba(READY_COLOR, 0.28) : selectedOwner.glow);
+  } else {
+    button.classList.toggle('locked', locked.has(node.id));
+    button.style.removeProperty('--input-color');
+    button.style.removeProperty('--input-glow');
+  }
+
+  extraClasses.forEach((className) => button.classList.add(className));
+}
+
 function getNodeCenter(id) {
   const node = getNodeById(id);
   const surfaceRect = boardEl.parentElement.getBoundingClientRect();
@@ -525,13 +549,20 @@ function renderBoard(extraClasses = new Map()) {
     button.dataset.value = node.value;
     button.style.left = `${node.x}%`;
     button.style.top = `${node.y}%`;
-    if (selectedOwner) {
-      button.style.setProperty('--input-color', selectedOwner.status === 'ready' ? READY_COLOR : selectedOwner.color);
-      button.style.setProperty('--input-glow', selectedOwner.status === 'ready' ? hexToRgba(READY_COLOR, 0.28) : selectedOwner.glow);
-    }
     button.setAttribute('aria-label', `${node.value}`);
     button.textContent = String(node.value);
+    applyCellState(button, node, selectedOwners, locked, extraClasses.get(node.id) || []);
     boardEl.appendChild(button);
+  });
+}
+
+function syncBoardInteractionState() {
+  const selectedOwners = getSelectionOwners();
+  const locked = getLockedSelectedIds();
+  nodes.forEach((node) => {
+    const button = getNodeElement(node.id);
+    if (!button) return;
+    applyCellState(button, node, selectedOwners, locked);
   });
 }
 
@@ -578,6 +609,10 @@ function addAvoidPoint(input, point) {
 }
 
 function createInput(pointerId, event) {
+  if (activeInputs.has(pointerId)) {
+    removeInput(pointerId);
+  }
+
   const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
   const color = INPUT_COLORS[nextInputColorIndex % INPUT_COLORS.length];
   pathEl.classList.add('active-path');
@@ -610,6 +645,13 @@ function removeInput(pointerId) {
       input.pathFrameId = null;
     }
     input.pathEl.remove();
+  }
+  if (boardEl.hasPointerCapture?.(pointerId)) {
+    try {
+      boardEl.releasePointerCapture(pointerId);
+    } catch {
+      // Pointer capture may already be gone on fast multi-touch releases.
+    }
   }
   activeInputs.delete(pointerId);
   if (focusedPointerId === pointerId) {
@@ -917,7 +959,7 @@ function setSelectionFeedback(input) {
 }
 
 function commitSelectionChange(input) {
-  renderBoard();
+  syncBoardInteractionState();
   updateStats();
   setSelectionFeedback(input);
 }
@@ -1103,7 +1145,7 @@ function finishSelection(pointerId, event = null) {
   const inputColor = input.color;
   const avoidPoints = getSpawnAvoidPoints(pointerId, input);
   removeInput(pointerId);
-  renderBoard();
+  syncBoardInteractionState();
   updateStats();
 
   if (path.length < 2) {
@@ -1170,31 +1212,54 @@ function startNewBoard() {
   );
 }
 
+function preventBoardGesture(event) {
+  if (event.cancelable) event.preventDefault();
+}
+
+function capturePointer(pointerId) {
+  try {
+    boardEl.setPointerCapture(pointerId);
+  } catch {
+    // Some browsers can miss capture during very fast multi-touch starts.
+  }
+}
+
+function handlePointerMove(event) {
+  if (!activeInputs.has(event.pointerId)) return;
+  preventBoardGesture(event);
+
+  addIdsAtPointerPath(event.pointerId, event);
+  showActivePath(event.pointerId, event);
+}
+
 boardEl.addEventListener('pointerdown', (event) => {
+  preventBoardGesture(event);
+  if (activeInputs.size >= MAX_ACTIVE_INPUTS && !activeInputs.has(event.pointerId)) return;
+
   const id = getTargetId(event);
   if (id === null) return;
 
   resumeAudioContext();
-  boardEl.setPointerCapture(event.pointerId);
+  capturePointer(event.pointerId);
   createInput(event.pointerId, event);
   addIdToSelection(event.pointerId, id);
   showActivePath(event.pointerId, event);
 });
 
-boardEl.addEventListener('pointermove', (event) => {
-  if (!activeInputs.has(event.pointerId)) return;
-
-  addIdsAtPointerPath(event.pointerId, event);
-  showActivePath(event.pointerId, event);
-});
+boardEl.addEventListener('pointermove', handlePointerMove);
+if ('onpointerrawupdate' in window) {
+  boardEl.addEventListener('pointerrawupdate', handlePointerMove);
+}
 
 boardEl.addEventListener('pointerup', (event) => {
+  preventBoardGesture(event);
   finishSelection(event.pointerId, event);
 });
 
 boardEl.addEventListener('pointercancel', (event) => {
+  preventBoardGesture(event);
   removeInput(event.pointerId);
-  renderBoard();
+  syncBoardInteractionState();
   updateStats();
 });
 

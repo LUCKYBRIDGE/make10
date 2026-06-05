@@ -63,6 +63,7 @@ html,
 body {
   height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
 }
 
 body {
@@ -74,6 +75,9 @@ body {
     repeating-linear-gradient(90deg, rgba(22, 128, 92, 0.06) 0 1px, transparent 1px 76px),
     repeating-linear-gradient(0deg, rgba(55, 116, 165, 0.055) 0 1px, transparent 1px 76px),
     var(--bg);
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
 }
 
 button {
@@ -214,6 +218,9 @@ h1 {
   display: grid;
   place-items: center;
   container-type: size;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
   border: 1px solid rgba(28, 36, 32, 0.14);
   border-radius: 8px;
   background:
@@ -269,6 +276,8 @@ h1 {
   padding: 0;
   display: block;
   touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .cell {
@@ -287,7 +296,9 @@ h1 {
   font-size: var(--cell-font-size);
   font-weight: 900;
   line-height: 1;
+  touch-action: none;
   user-select: none;
+  -webkit-user-select: none;
   transform: translate(-50%, -50%);
   transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease, background 140ms ease;
 }
