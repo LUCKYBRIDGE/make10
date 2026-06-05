@@ -5,12 +5,12 @@ const MAX_TILE_VALUE = 9;
 const MIN_NODE_COUNT = 14;
 const MAX_NODE_COUNT = 64;
 const DENSITY_STEPS = Object.freeze([
-  { boardSize: 980, nodeCount: 44, minDistance: 12.2 },
-  { boardSize: 860, nodeCount: 39, minDistance: 12.8 },
-  { boardSize: 740, nodeCount: 34, minDistance: 13.6 },
-  { boardSize: 620, nodeCount: 30, minDistance: 14.4 },
-  { boardSize: 500, nodeCount: 25, minDistance: 15.4 },
-  { boardSize: 0, nodeCount: MIN_NODE_COUNT + 2, minDistance: 16.4 }
+  { boardSize: 980, nodeCount: 58, minDistance: 10.8 },
+  { boardSize: 860, nodeCount: 53, minDistance: 11.4 },
+  { boardSize: 740, nodeCount: 47, minDistance: 12.2 },
+  { boardSize: 620, nodeCount: 40, minDistance: 13 },
+  { boardSize: 500, nodeCount: 33, minDistance: 14.2 },
+  { boardSize: 0, nodeCount: MIN_NODE_COUNT + 6, minDistance: 15.2 }
 ]);
 const BOARD_MARGIN_PERCENT = 9;
 const MIN_BOARD_MARGIN_PERCENT = 4.5;
@@ -19,7 +19,7 @@ const GAME_MODES = Object.freeze({
     label: '모바일',
     nodeDelta: -4,
     minNodes: 14,
-    maxNodes: 25,
+    maxNodes: 34,
     minNodeGapPx: 22,
     startHitRadius: 4.6,
     moveHitRadius: 3.8,
@@ -30,7 +30,7 @@ const GAME_MODES = Object.freeze({
     label: '태블릿',
     nodeDelta: 0,
     minNodes: 18,
-    maxNodes: 44,
+    maxNodes: 56,
     minNodeGapPx: 18,
     startHitRadius: 3.8,
     moveHitRadius: 3.1,
@@ -137,6 +137,7 @@ let score = 0;
 let combo = 0;
 let remainingSeconds = GAME_DURATION_SECONDS;
 let gameActive = true;
+let nodeGeneration = 0;
 let currentModeKey = getInitialModeKey();
 let currentSizeTierKey = getSizeTierKey();
 let focusedPointerId = null;
@@ -419,13 +420,14 @@ function createScatterPositions(count) {
   return positions;
 }
 
-function createNodes(values) {
+function createNodes(values, createdAt = nodeGeneration) {
   const positions = createScatterPositions(values.length);
   return values.map((value, id) => ({
     id,
     value,
     x: positions[id].x,
-    y: positions[id].y
+    y: positions[id].y,
+    createdAt
   }));
 }
 
@@ -717,6 +719,7 @@ function createInput(pointerId, event) {
     visualSum: null,
     wasReady: false,
     pathEl,
+    startedAtGeneration: nodeGeneration,
     selectedIds: [],
     selectedIdSet: new Set(),
     selectedSum: 0,
@@ -980,6 +983,7 @@ function getNearestNodeIdAtBoardPoint(point, hitRadiusPercent, pointerId, metric
   nodes.forEach((node) => {
     if (resolvingIds.has(node.id)) return;
     if (isLockedByAnotherInput(pointerId, node.id)) return;
+    if (isNewerThanInput(pointerId, node)) return;
     const dx = pointX - (node.x / 100) * metrics.width;
     const dy = pointY - (node.y / 100) * metrics.height;
     const nodeDistanceSquared = dx * dx + dy * dy;
@@ -1008,6 +1012,7 @@ function getNodeIdsAlongSegment(start, end, hitRadiusPercent, pointerId, metrics
   nodes.forEach((node) => {
     if (resolvingIds.has(node.id)) return;
     if (isLockedByAnotherInput(pointerId, node.id)) return;
+    if (isNewerThanInput(pointerId, node)) return;
     if (input?.selectedIdSet.has(node.id) && node.id !== previousId) return;
 
     const pointX = (node.x / 100) * metrics.width;
@@ -1048,6 +1053,11 @@ function isLockedByAnotherInput(pointerId, id) {
   return false;
 }
 
+function isNewerThanInput(pointerId, node) {
+  const input = activeInputs.get(pointerId);
+  return Boolean(input && node.createdAt > input.startedAtGeneration);
+}
+
 function setSelectionFeedback(input) {
   const sum = input.selectedSum;
   setFeedback(sum === TARGET_SUM ? '합 10입니다. 손을 떼면 사라집니다.' : `지금 더한 값 ${sum}`, sum > TARGET_SUM ? 'error' : 'neutral');
@@ -1062,7 +1072,7 @@ function commitSelectionChange(input, dirtyIds = input.selectedIds) {
 function addIdToSelection(pointerId, id, shouldCommit = true) {
   const input = activeInputs.get(pointerId);
   const node = getNodeById(id);
-  if (!input || !node || resolvingIds.has(id) || isLockedByAnotherInput(pointerId, id)) return [];
+  if (!input || !node || resolvingIds.has(id) || isLockedByAnotherInput(pointerId, id) || isNewerThanInput(pointerId, node)) return [];
 
   const lastId = input.selectedIds[input.selectedIds.length - 1];
   if (lastId === id) return [];
@@ -1242,6 +1252,7 @@ function createSpawnPosition(usedPositions, avoidPoints) {
 
 function replaceSelectedNodes(ids, avoidPoints = []) {
   const selectedIdSet = new Set(ids);
+  nodeGeneration += 1;
   const usedPositions = nodes
     .filter((node) => !selectedIdSet.has(node.id))
     .map((node) => ({ x: node.x, y: node.y }));
@@ -1255,7 +1266,8 @@ function replaceSelectedNodes(ids, avoidPoints = []) {
       id: node.id,
       value: randomValue(),
       x: position.x,
-      y: position.y
+      y: position.y,
+      createdAt: nodeGeneration
     };
   });
   syncNodeLookup();
@@ -1325,6 +1337,7 @@ function finishSelection(pointerId, event = null) {
 
 function resetBoard(nextNodes, message) {
   clearAllInputs();
+  nodeGeneration = 0;
   nodes = nextNodes.map((node) => ({ ...node }));
   syncNodeLookup();
   score = 0;
@@ -1341,8 +1354,9 @@ function resetBoard(nextNodes, message) {
 function startNewBoard() {
   const nodeCount = getResponsiveNodeCount();
   const tuning = getTuning();
+  nodeGeneration = 0;
   resetBoard(
-    createNodes(Array.from({ length: nodeCount }, randomValue)),
+    createNodes(Array.from({ length: nodeCount }, randomValue), nodeGeneration),
     `${tuning.modeLabel} · ${tuning.sizeLabel} · ${nodeCount}개의 숫자를 이어 10을 만드세요.`
   );
 }
