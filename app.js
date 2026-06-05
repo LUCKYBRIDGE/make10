@@ -5,12 +5,12 @@ const MAX_TILE_VALUE = 9;
 const MIN_NODE_COUNT = 14;
 const MAX_NODE_COUNT = 64;
 const DENSITY_STEPS = Object.freeze([
-  { boardSize: 980, nodeCount: 38, minDistance: 12.8 },
-  { boardSize: 860, nodeCount: 34, minDistance: 13.4 },
-  { boardSize: 740, nodeCount: 30, minDistance: 14.2 },
-  { boardSize: 620, nodeCount: 26, minDistance: 15 },
-  { boardSize: 500, nodeCount: 22, minDistance: 16 },
-  { boardSize: 0, nodeCount: MIN_NODE_COUNT, minDistance: 17 }
+  { boardSize: 980, nodeCount: 44, minDistance: 12.2 },
+  { boardSize: 860, nodeCount: 39, minDistance: 12.8 },
+  { boardSize: 740, nodeCount: 34, minDistance: 13.6 },
+  { boardSize: 620, nodeCount: 30, minDistance: 14.4 },
+  { boardSize: 500, nodeCount: 25, minDistance: 15.4 },
+  { boardSize: 0, nodeCount: MIN_NODE_COUNT + 2, minDistance: 16.4 }
 ]);
 const BOARD_MARGIN_PERCENT = 9;
 const MIN_BOARD_MARGIN_PERCENT = 4.5;
@@ -19,7 +19,7 @@ const GAME_MODES = Object.freeze({
     label: '모바일',
     nodeDelta: -4,
     minNodes: 14,
-    maxNodes: 22,
+    maxNodes: 25,
     minNodeGapPx: 22,
     startHitRadius: 4.6,
     moveHitRadius: 3.8,
@@ -30,7 +30,7 @@ const GAME_MODES = Object.freeze({
     label: '태블릿',
     nodeDelta: 0,
     minNodes: 18,
-    maxNodes: 38,
+    maxNodes: 44,
     minNodeGapPx: 18,
     startHitRadius: 3.8,
     moveHitRadius: 3.1,
