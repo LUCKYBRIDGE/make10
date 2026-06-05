@@ -141,11 +141,14 @@ let nextInputColorIndex = 0;
 let audioContext = null;
 let resizeFrameId = null;
 let pointerMoveFrameId = null;
+let tuningCache = null;
 let boardMetricsCache = null;
 let boardRectCache = null;
 let surfaceRectCache = null;
 const effectElements = [];
 const cellElements = new Map();
+const nodeLookup = new Map();
+const rgbaCache = new Map();
 const pendingPointerMoves = new Map();
 
 function randomValue() {
@@ -158,16 +161,17 @@ function setFeedback(message, tone = 'neutral') {
 }
 
 function hexToRgba(hex, alpha) {
+  const cacheKey = `${hex}:${alpha}`;
+  if (rgbaCache.has(cacheKey)) return rgbaCache.get(cacheKey);
+
   const normalized = hex.replace('#', '');
   const value = Number.parseInt(normalized, 16);
   const red = (value >> 16) & 255;
   const green = (value >> 8) & 255;
   const blue = value & 255;
-  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
-}
-
-function distance(first, second) {
-  return Math.hypot(first.x - second.x, first.y - second.y);
+  const rgba = `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+  rgbaCache.set(cacheKey, rgba);
+  return rgba;
 }
 
 function getInitialModeKey() {
@@ -194,9 +198,11 @@ function getSizeTier() {
 }
 
 function getTuning() {
+  if (tuningCache) return tuningCache;
+
   const mode = getMode();
   const tier = getSizeTier();
-  return {
+  tuningCache = {
     modeLabel: mode.label,
     sizeLabel: tier.label,
     nodeDelta: mode.nodeDelta + tier.nodeDelta,
@@ -208,6 +214,7 @@ function getTuning() {
     trailPointMinDistance: Math.max(6, mode.trailPointMinDistance + tier.trailPointDelta),
     maxEffectElements: clampNumber(mode.maxEffectElements + tier.effectDelta, 32, 80)
   };
+  return tuningCache;
 }
 
 function clampNumber(value, min, max) {
@@ -315,6 +322,18 @@ function getBoardDistance(first, second, metrics = getBoardMetrics()) {
   ) / metrics.shortSide * 100;
 }
 
+function getNearestBoardDistance(candidate, points, metrics = getBoardMetrics()) {
+  let nearestDistance = Infinity;
+  for (let index = 0; index < points.length; index += 1) {
+    const pointDistance = getBoardDistance(points[index], candidate, metrics);
+    if (pointDistance < nearestDistance) {
+      nearestDistance = pointDistance;
+      if (nearestDistance === 0) break;
+    }
+  }
+  return Number.isFinite(nearestDistance) ? nearestDistance : 100;
+}
+
 function createScatterPositions(count) {
   const positions = [];
   const minDistance = getMinimumNodeDistance(count);
@@ -328,7 +347,7 @@ function createScatterPositions(count) {
       const point = createRandomBoardPoint(margin);
       const nearestDistance = positions.length === 0
         ? minDistance
-        : Math.min(...positions.map((existing) => getBoardDistance(existing, point, metrics)));
+        : getNearestBoardDistance(point, positions, metrics);
       if (nearestDistance > bestDistance) {
         bestDistance = nearestDistance;
         bestPoint = point;
@@ -358,19 +377,12 @@ function createNodes(values) {
 }
 
 function getNodeById(id) {
-  return nodes.find((node) => node.id === id) || null;
+  return nodeLookup.get(id) || null;
 }
 
-function getFocusedInput() {
-  return activeInputs.get(focusedPointerId) || null;
-}
-
-function getFocusedSelectedIds() {
-  return getFocusedInput()?.selectedIds || [];
-}
-
-function getSelectedSum(ids = getFocusedSelectedIds()) {
-  return ids.reduce((sum, id) => sum + (getNodeById(id)?.value || 0), 0);
+function syncNodeLookup() {
+  nodeLookup.clear();
+  nodes.forEach((node) => nodeLookup.set(node.id, node));
 }
 
 function updateStats() {
@@ -392,6 +404,7 @@ function updateModeControls() {
 function setMode(modeKey) {
   if (!GAME_MODES[modeKey] || modeKey === currentModeKey) return;
   currentModeKey = modeKey;
+  tuningCache = null;
   invalidateLayoutCache();
   updateModeControls();
   startNewBoard();
@@ -401,6 +414,7 @@ function syncSizeTier() {
   const nextSizeTierKey = getSizeTierKey();
   if (nextSizeTierKey === currentSizeTierKey) return;
   currentSizeTierKey = nextSizeTierKey;
+  tuningCache = null;
   updateModeControls();
 }
 
@@ -473,26 +487,10 @@ function playErrorSound() {
   playTone(audio, 196, 0.085, 0.16, 0.04, 'sine');
 }
 
-function getActiveSelectedIds() {
-  const selected = new Set();
-  activeInputs.forEach((input) => {
-    input.selectedIds.forEach((id) => selected.add(id));
-  });
-  return selected;
-}
-
-function getLockedSelectedIds() {
-  const locked = new Set();
-  activeInputs.forEach((input) => {
-    input.selectedIds.forEach((id) => locked.add(id));
-  });
-  return locked;
-}
-
 function getSelectionOwners() {
   const owners = new Map();
   activeInputs.forEach((input) => {
-    const sum = getSelectedSum(input.selectedIds);
+    const sum = input.selectedSum;
     const status = sum === TARGET_SUM ? 'ready' : sum > TARGET_SUM ? 'over-target' : 'active';
     input.selectedIds.forEach((id) => owners.set(id, {
       color: input.color,
@@ -565,7 +563,7 @@ function isInsideBoardPoint(point) {
 
 function renderBoard(extraClasses = new Map()) {
   const selectedOwners = getSelectionOwners();
-  const locked = getLockedSelectedIds();
+  const locked = new Set(selectedOwners.keys());
   boardEl.innerHTML = '';
   cellElements.clear();
   nodes.forEach((node) => {
@@ -591,10 +589,13 @@ function renderBoard(extraClasses = new Map()) {
   });
 }
 
-function syncBoardInteractionState() {
+function syncBoardInteractionState(ids = null) {
   const selectedOwners = getSelectionOwners();
-  const locked = getLockedSelectedIds();
-  nodes.forEach((node) => {
+  const locked = new Set(selectedOwners.keys());
+  const targetNodes = ids
+    ? [...new Set(ids)].map(getNodeById).filter(Boolean)
+    : nodes;
+  targetNodes.forEach((node) => {
     const button = getNodeElement(node.id);
     if (!button) return;
     applyCellState(button, node, selectedOwners, locked);
@@ -664,6 +665,8 @@ function createInput(pointerId, event) {
     wasReady: false,
     pathEl,
     selectedIds: [],
+    selectedIdSet: new Set(),
+    selectedSum: 0,
     trailPoints: [getPointerPoint(event)],
     avoidPoints: [getBoardPercentPoint(event)]
   };
@@ -717,7 +720,7 @@ function showActivePath(pointerId, event) {
 }
 
 function syncInputVisualState(input) {
-  const sum = getSelectedSum(input.selectedIds);
+  const sum = input.selectedSum;
   if (sum === input.visualSum) return;
   input.visualSum = sum;
 
@@ -917,92 +920,88 @@ function getNearestNodeIdAtBoardPoint(point, hitRadiusPercent, pointerId, metric
   if (!isInsideBoardPoint(point)) return null;
 
   let nearestId = null;
-  let nearestDistance = hitRadiusPercent;
+  const pointX = (point.x / 100) * metrics.width;
+  const pointY = (point.y / 100) * metrics.height;
+  const radiusPixels = (hitRadiusPercent / 100) * metrics.shortSide;
+  let nearestDistanceSquared = radiusPixels * radiusPixels;
   nodes.forEach((node) => {
     if (resolvingIds.has(node.id)) return;
     if (isLockedByAnotherInput(pointerId, node.id)) return;
-    const nodeDistance = getBoardDistance(point, node, metrics);
-    if (nodeDistance <= nearestDistance) {
-      nearestDistance = nodeDistance;
+    const dx = pointX - (node.x / 100) * metrics.width;
+    const dy = pointY - (node.y / 100) * metrics.height;
+    const nodeDistanceSquared = dx * dx + dy * dy;
+    if (nodeDistanceSquared <= nearestDistanceSquared) {
+      nearestDistanceSquared = nodeDistanceSquared;
       nearestId = node.id;
     }
   });
   return nearestId;
 }
 
-function getSegmentHit(point, start, end, metrics = getBoardMetrics()) {
-  const normalizedPoint = {
-    x: (point.x / 100) * metrics.width,
-    y: (point.y / 100) * metrics.height
-  };
-  const normalizedStart = {
-    x: (start.x / 100) * metrics.width,
-    y: (start.y / 100) * metrics.height
-  };
-  const normalizedEnd = {
-    x: (end.x / 100) * metrics.width,
-    y: (end.y / 100) * metrics.height
-  };
-  const dx = normalizedEnd.x - normalizedStart.x;
-  const dy = normalizedEnd.y - normalizedStart.y;
-  const lengthSquared = dx * dx + dy * dy;
-  if (lengthSquared === 0) {
-    return {
-      distance: distance(normalizedPoint, normalizedStart) / metrics.shortSide * 100,
-      t: 0
-    };
-  }
-
-  const rawT = ((normalizedPoint.x - normalizedStart.x) * dx + (normalizedPoint.y - normalizedStart.y) * dy) / lengthSquared;
-  const t = Math.max(0, Math.min(1, rawT));
-  const projection = {
-    x: normalizedStart.x + dx * t,
-    y: normalizedStart.y + dy * t
-  };
-  return {
-    distance: distance(normalizedPoint, projection) / metrics.shortSide * 100,
-    t
-  };
-}
-
 function getNodeIdsAlongSegment(start, end, hitRadiusPercent, pointerId, metrics = getBoardMetrics()) {
   const input = activeInputs.get(pointerId);
   const previousId = input ? input.selectedIds[input.selectedIds.length - 2] : null;
   const hits = [];
+  const startX = (start.x / 100) * metrics.width;
+  const startY = (start.y / 100) * metrics.height;
+  const endX = (end.x / 100) * metrics.width;
+  const endY = (end.y / 100) * metrics.height;
+  const dx = endX - startX;
+  const dy = endY - startY;
+  const lengthSquared = dx * dx + dy * dy;
+  const radiusPixels = (hitRadiusPercent / 100) * metrics.shortSide;
+  const radiusSquared = radiusPixels * radiusPixels;
 
   nodes.forEach((node) => {
     if (resolvingIds.has(node.id)) return;
     if (isLockedByAnotherInput(pointerId, node.id)) return;
-    if (input?.selectedIds.includes(node.id) && node.id !== previousId) return;
+    if (input?.selectedIdSet.has(node.id) && node.id !== previousId) return;
 
-    const hit = getSegmentHit(node, start, end, metrics);
-    if (hit.distance <= hitRadiusPercent) {
+    const pointX = (node.x / 100) * metrics.width;
+    const pointY = (node.y / 100) * metrics.height;
+    let t = 0;
+    let distanceSquared = 0;
+    if (lengthSquared === 0) {
+      const startDistanceX = pointX - startX;
+      const startDistanceY = pointY - startY;
+      distanceSquared = startDistanceX * startDistanceX + startDistanceY * startDistanceY;
+    } else {
+      const rawT = ((pointX - startX) * dx + (pointY - startY) * dy) / lengthSquared;
+      t = clampNumber(rawT, 0, 1);
+      const projectionX = startX + dx * t;
+      const projectionY = startY + dy * t;
+      const projectionDistanceX = pointX - projectionX;
+      const projectionDistanceY = pointY - projectionY;
+      distanceSquared = projectionDistanceX * projectionDistanceX + projectionDistanceY * projectionDistanceY;
+    }
+
+    if (distanceSquared <= radiusSquared) {
       hits.push({
         id: node.id,
-        t: hit.t,
-        distance: hit.distance
+        t,
+        distanceSquared
       });
     }
   });
 
-  hits.sort((first, second) => first.t - second.t || first.distance - second.distance);
+  hits.sort((first, second) => first.t - second.t || first.distanceSquared - second.distanceSquared);
   return hits.map((hit) => hit.id);
 }
 
 function isLockedByAnotherInput(pointerId, id) {
   for (const [otherPointerId, input] of activeInputs.entries()) {
-    if (otherPointerId !== pointerId && input.selectedIds.includes(id)) return true;
+    if (otherPointerId !== pointerId && input.selectedIdSet.has(id)) return true;
   }
   return false;
 }
 
 function setSelectionFeedback(input) {
-  const sum = getSelectedSum(input.selectedIds);
+  const sum = input.selectedSum;
   setFeedback(sum === TARGET_SUM ? '합 10입니다. 손을 떼면 사라집니다.' : `지금 더한 값 ${sum}`, sum > TARGET_SUM ? 'error' : 'neutral');
 }
 
-function commitSelectionChange(input) {
-  syncBoardInteractionState();
+function commitSelectionChange(input, dirtyIds = input.selectedIds) {
+  syncBoardInteractionState(dirtyIds);
   updateStats();
   setSelectionFeedback(input);
 }
@@ -1010,36 +1009,43 @@ function commitSelectionChange(input) {
 function addIdToSelection(pointerId, id, shouldCommit = true) {
   const input = activeInputs.get(pointerId);
   const node = getNodeById(id);
-  if (!input || !node || resolvingIds.has(id) || isLockedByAnotherInput(pointerId, id)) return false;
+  if (!input || !node || resolvingIds.has(id) || isLockedByAnotherInput(pointerId, id)) return [];
 
   const lastId = input.selectedIds[input.selectedIds.length - 1];
-  if (lastId === id) return false;
+  if (lastId === id) return [];
 
   const previousId = input.selectedIds[input.selectedIds.length - 2];
   if (previousId === id) {
-    input.selectedIds.pop();
+    const removedId = input.selectedIds.pop();
+    const removedNode = getNodeById(removedId);
+    input.selectedIdSet.delete(removedId);
+    input.selectedSum -= removedNode?.value || 0;
     focusedPointerId = pointerId;
-    if (shouldCommit) commitSelectionChange(input);
-    return true;
+    const dirtyIds = [...input.selectedIds, removedId];
+    if (shouldCommit) commitSelectionChange(input, dirtyIds);
+    return dirtyIds;
   }
 
-  if (input.selectedIds.includes(id)) return false;
+  if (input.selectedIdSet.has(id)) return [];
 
   input.selectedIds.push(id);
+  input.selectedIdSet.add(id);
+  input.selectedSum += node.value;
   focusedPointerId = pointerId;
-  if (shouldCommit) commitSelectionChange(input);
-  return true;
+  const dirtyIds = [...input.selectedIds];
+  if (shouldCommit) commitSelectionChange(input, dirtyIds);
+  return dirtyIds;
 }
 
 function addIdsAtPointerPath(pointerId, event) {
   const input = activeInputs.get(pointerId);
   if (!input) return;
 
-  let changed = false;
+  const dirtyIds = new Set();
   getIdsAtPointerPath(pointerId, event.clientX, event.clientY).forEach((id) => {
-    changed = addIdToSelection(pointerId, id, false) || changed;
+    addIdToSelection(pointerId, id, false).forEach((dirtyId) => dirtyIds.add(dirtyId));
   });
-  if (changed) commitSelectionChange(input);
+  if (dirtyIds.size > 0) commitSelectionChange(input, [...dirtyIds]);
 }
 
 function processPointerMove(point) {
@@ -1135,13 +1141,11 @@ function getForwardAvoidPoints(input) {
 }
 
 function getCandidateAvoidScore(candidate, avoidPoints, metrics = getBoardMetrics()) {
-  if (avoidPoints.length === 0) return 100;
-  return Math.min(...avoidPoints.map((point) => getBoardDistance(candidate, point, metrics)));
+  return getNearestBoardDistance(candidate, avoidPoints, metrics);
 }
 
 function getNearestUsedDistance(candidate, usedPositions, metrics = getBoardMetrics()) {
-  if (usedPositions.length === 0) return 100;
-  return Math.min(...usedPositions.map((existing) => getBoardDistance(existing, candidate, metrics)));
+  return getNearestBoardDistance(candidate, usedPositions, metrics);
 }
 
 function createSpawnPosition(usedPositions, avoidPoints) {
@@ -1155,9 +1159,7 @@ function createSpawnPosition(usedPositions, avoidPoints) {
   const margin = getBoardMarginsPercent(metrics);
 
   for (let attempt = 0; attempt < SPAWN_POSITION_ATTEMPTS; attempt += 1) {
-    const candidate = {
-      ...createRandomBoardPoint(margin)
-    };
+    const candidate = createRandomBoardPoint(margin);
     const nearestUsedDistance = getNearestUsedDistance(candidate, usedPositions, metrics);
     const avoidScore = getCandidateAvoidScore(candidate, avoidPoints, metrics);
 
@@ -1186,12 +1188,13 @@ function createSpawnPosition(usedPositions, avoidPoints) {
 }
 
 function replaceSelectedNodes(ids, avoidPoints = []) {
+  const selectedIdSet = new Set(ids);
   const usedPositions = nodes
-    .filter((node) => !ids.includes(node.id))
+    .filter((node) => !selectedIdSet.has(node.id))
     .map((node) => ({ x: node.x, y: node.y }));
 
   nodes = nodes.map((node) => {
-    if (!ids.includes(node.id)) return node;
+    if (!selectedIdSet.has(node.id)) return node;
 
     const position = createSpawnPosition(usedPositions, avoidPoints);
     usedPositions.push(position);
@@ -1202,6 +1205,7 @@ function replaceSelectedNodes(ids, avoidPoints = []) {
       y: position.y
     };
   });
+  syncNodeLookup();
 }
 
 function finishSelection(pointerId, event = null) {
@@ -1217,11 +1221,11 @@ function finishSelection(pointerId, event = null) {
   }
 
   const path = [...input.selectedIds];
-  const sum = getSelectedSum(path);
+  const sum = input.selectedSum;
   const inputColor = input.color;
   const avoidPoints = getSpawnAvoidPoints(pointerId, input);
   removeInput(pointerId);
-  syncBoardInteractionState();
+  syncBoardInteractionState(path);
   updateStats();
 
   if (path.length < 2) {
@@ -1269,6 +1273,7 @@ function finishSelection(pointerId, event = null) {
 function resetBoard(nextNodes, message) {
   clearAllInputs();
   nodes = nextNodes.map((node) => ({ ...node }));
+  syncNodeLookup();
   score = 0;
   combo = 0;
   resolvingIds = new Set();
@@ -1332,8 +1337,10 @@ boardEl.addEventListener('pointerup', (event) => {
 
 boardEl.addEventListener('pointercancel', (event) => {
   preventBoardGesture(event);
+  const input = activeInputs.get(event.pointerId);
+  const dirtyIds = input ? [...input.selectedIds] : [];
   removeInput(event.pointerId);
-  syncBoardInteractionState();
+  syncBoardInteractionState(dirtyIds);
   updateStats();
 });
 
