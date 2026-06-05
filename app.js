@@ -3,14 +3,14 @@ const GAME_DURATION_SECONDS = 60;
 const TIMER_WARNING_SECONDS = 10;
 const MAX_TILE_VALUE = 9;
 const MIN_NODE_COUNT = 14;
-const MAX_NODE_COUNT = 64;
+const MAX_NODE_COUNT = 96;
 const DENSITY_STEPS = Object.freeze([
-  { boardSize: 980, nodeCount: 58, minDistance: 10.8 },
-  { boardSize: 860, nodeCount: 53, minDistance: 11.4 },
-  { boardSize: 740, nodeCount: 47, minDistance: 12.2 },
-  { boardSize: 620, nodeCount: 40, minDistance: 13 },
-  { boardSize: 500, nodeCount: 33, minDistance: 14.2 },
-  { boardSize: 0, nodeCount: MIN_NODE_COUNT + 6, minDistance: 15.2 }
+  { boardSize: 980, nodeCount: 92, minDistance: 8.2 },
+  { boardSize: 860, nodeCount: 86, minDistance: 8.6 },
+  { boardSize: 740, nodeCount: 80, minDistance: 9 },
+  { boardSize: 620, nodeCount: 72, minDistance: 9.8 },
+  { boardSize: 500, nodeCount: 58, minDistance: 10.8 },
+  { boardSize: 0, nodeCount: MIN_NODE_COUNT + 18, minDistance: 12.8 }
 ]);
 const BOARD_MARGIN_PERCENT = 9;
 const MIN_BOARD_MARGIN_PERCENT = 4.5;
@@ -19,7 +19,7 @@ const GAME_MODES = Object.freeze({
     label: '모바일',
     nodeDelta: -4,
     minNodes: 14,
-    maxNodes: 34,
+    maxNodes: 56,
     minNodeGapPx: 22,
     startHitRadius: 4.6,
     moveHitRadius: 3.8,
@@ -30,7 +30,7 @@ const GAME_MODES = Object.freeze({
     label: '태블릿',
     nodeDelta: 0,
     minNodes: 18,
-    maxNodes: 56,
+    maxNodes: 84,
     minNodeGapPx: 18,
     startHitRadius: 3.8,
     moveHitRadius: 3.1,
@@ -341,9 +341,9 @@ function getCellDiameterPixels() {
   }
 
   const viewportMin = Math.min(window.innerWidth, window.innerHeight);
-  if (currentModeKey === 'mobile') return Math.min(64, Math.max(48, viewportMin * 0.12));
-  if (currentModeKey === 'board') return Math.min(62, Math.max(42, viewportMin * 0.052));
-  return Math.min(60, Math.max(40, viewportMin * 0.07));
+  if (currentModeKey === 'mobile') return Math.min(50, Math.max(36, viewportMin * 0.087));
+  if (currentModeKey === 'board') return Math.min(46, Math.max(32, viewportMin * 0.035));
+  return Math.min(48, Math.max(32, viewportMin * 0.048));
 }
 
 function getMinimumNodeDistance(count) {

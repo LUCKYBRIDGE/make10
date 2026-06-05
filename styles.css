@@ -12,21 +12,21 @@
   --blue: #3774a5;
   --shadow: 0 14px 36px rgba(30, 38, 33, 0.12);
   --board-size: min(86dvh, 980px, 100%);
-  --cell-size: clamp(40px, 7vmin, 60px);
-  --cell-font-size: clamp(1.08rem, 4.4vmin, 2.05rem);
+  --cell-size: clamp(32px, 4.8vmin, 48px);
+  --cell-font-size: clamp(0.88rem, 3.1vmin, 1.55rem);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 body[data-mode="mobile"] {
   --board-size: min(78dvh, 620px, 100%);
-  --cell-size: clamp(48px, 12vmin, 64px);
-  --cell-font-size: clamp(1.35rem, 7vmin, 2.2rem);
+  --cell-size: clamp(36px, 8.7vmin, 50px);
+  --cell-font-size: clamp(1rem, 5.1vmin, 1.62rem);
 }
 
 body[data-mode="board"] {
   --board-size: min(88dvh, 1100px, 100%);
-  --cell-size: clamp(42px, 5.2vmin, 62px);
-  --cell-font-size: clamp(1.18rem, 3.2vmin, 2rem);
+  --cell-size: clamp(32px, 3.3vmin, 46px);
+  --cell-font-size: clamp(0.9rem, 2.25vmin, 1.45rem);
 }
 
 body[data-size="compact"] {
@@ -43,16 +43,16 @@ body[data-size="large"] {
 
 body[data-mode="mobile"][data-size="compact"] {
   --board-size: min(72dvh, 540px, 100%);
-  --cell-size: clamp(50px, 13vmin, 66px);
+  --cell-size: clamp(36px, 9.2vmin, 52px);
 }
 
 body[data-mode="tablet"][data-size="compact"] {
-  --cell-size: clamp(44px, 9vmin, 60px);
+  --cell-size: clamp(32px, 6.4vmin, 46px);
 }
 
 body[data-mode="tablet"][data-size="large"],
 body[data-mode="board"][data-size="large"] {
-  --cell-size: clamp(42px, 4.8vmin, 64px);
+  --cell-size: clamp(32px, 3.3vmin, 48px);
 }
 
 * {
@@ -290,6 +290,9 @@ h1 {
   position: absolute;
   width: var(--cell-size);
   height: var(--cell-size);
+  min-width: var(--cell-size);
+  min-height: var(--cell-size);
+  padding: 0;
   display: grid;
   place-items: center;
   border: 1px solid rgba(28, 36, 32, 0.15);
@@ -942,8 +945,8 @@ h1 {
   body[data-size="wide"],
   body[data-size="large"] {
     --board-size: min(100cqw, 100cqh);
-    --cell-size: clamp(34px, 9.5vmin, 48px);
-    --cell-font-size: clamp(1rem, 5.4vmin, 1.55rem);
+    --cell-size: clamp(26px, 7vmin, 36px);
+    --cell-font-size: clamp(0.8rem, 4vmin, 1.18rem);
   }
 
   .app-shell {
