@@ -1357,7 +1357,7 @@ function startNewBoard() {
   nodeGeneration = 0;
   resetBoard(
     createNodes(Array.from({ length: nodeCount }, randomValue), nodeGeneration),
-    `${tuning.modeLabel} · ${tuning.sizeLabel} · ${nodeCount}개의 숫자를 이어 10을 만드세요.`
+    `${tuning.modeLabel} · ${tuning.sizeLabel} · ${nodeCount}개 숫자 · 권장 1~6명 · 최대 10점 동시 입력`
   );
 }
 
